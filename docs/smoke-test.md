@@ -19,4 +19,4 @@ result of each item in the PR or release notes. Never commit game logs or screen
 - [ ] `horned-rat.log` exists in `WARFB\` and has no `exception` lines.
 - [ ] Uninstall: `./tools/install.ps1 -GameDir '<GOG game folder>' -Uninstall`; the game still starts.
 
-Later milestones add items here (window resizing, scale modes, Alt+Enter, ...).
+The log item applies from A1 on. Later milestones add items here (window resizing, scale modes, Alt+Enter, ...).
