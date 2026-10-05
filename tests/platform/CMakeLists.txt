@@ -8,7 +8,7 @@ target_compile_definitions(iat_fixture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(iat_fixture PRIVATE hr_warnings)
 
 add_executable(platform_tests pe_test.cpp wing_forward_test.cpp proxy_test.cpp log_test.cpp
-                              guard_test.cpp iat_hook_test.cpp)
+                              guard_test.cpp iat_hook_test.cpp modules_test.cpp dc_info_test.cpp)
 target_include_directories(platform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(platform_tests PRIVATE hr_platform hr_warnings iat_fixture Catch2::Catch2WithMain)
 add_dependencies(platform_tests fake_wing wing32)
