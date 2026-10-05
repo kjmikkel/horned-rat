@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The game is shown in our own in-process presenter window at exactly 640×480, captured from its composed (parked) main window every frame, with mouse, keyboard and cursor working as in vanilla, and every failure ending with an unparked, playable game.
+**Goal:** The game is shown in our own in-process presenter window at exactly 640×480, captured from its composed, hidden main window every frame, with mouse, keyboard and cursor working as in vanilla, and every failure ending with an unhidden, playable game.
 
-**Architecture:** Pure decisions (coordinate mapping, message classification, button masking, activation filtering, content-rect choice, brightness) live in `core` and are unit-tested on Windows and Linux. Thin Win32 building blocks (window capture, parking, subclassing, child input, D3D11 presenter, presenter window) live in `platform` and are tested on Windows CI with windows the tests create themselves. `wing32/a2.cpp` wires them together on a presenter thread and is verified by the manual smoke test.
+**Architecture:** Pure decisions (coordinate mapping, message classification, button masking, activation filtering, content-rect choice, brightness) live in `core` and are unit-tested on Windows and Linux. Thin Win32 building blocks (window capture, hiding, subclassing, child input, D3D11 presenter, presenter window) live in `platform` and are tested on Windows CI with windows the tests create themselves. `wing32/a2.cpp` wires them together on a presenter thread and is verified by the manual smoke test.
 
 **Tech Stack:** C++20, CMake/Ninja presets, MSVC x86 (static CRT), Direct3D 11 + DXGI 1.2 (flip model), GDI, Catch2 v3.8.1, GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-10-05-stage-a2-presenter-design.md` (milestone **A2.1**, §9). Background facts: `docs/re-notes/a1-findings.md`.
+
+**Revision (during Task 5):** off-screen parking was found not to work — GDI clips drawing to the on-screen part of a window. Tasks 5, 6, 12 and 13 below are revised accordingly; the `park` config key committed in Task 3 is removed again in Task 6.
 
 ## Global Constraints
 
@@ -18,12 +20,12 @@
 - Windows binaries: 32-bit x86, MSVC, static CRT, `/W4 /WX /permissive- /utf-8`. Non-MSVC: `-Wall -Wextra -Wpedantic -Werror`.
 - clang-format 19.1.7, repo `.clang-format` (LLVM base, 4 spaces, 100 columns, `PointerAlignment: Left`).
 - Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- "Never worse than vanilla": every presenter failure path ends with the game window unparked at (0,0) and playable (spec §7).
+- "Never worse than vanilla": every presenter failure path ends with the game window unhidden at (0,0) and playable (spec §7).
 - Presenter size in A2.1 is fixed at 640×480 client, picture drawn 1:1 (scaling is A2.2).
-- Defaults: `park = offscreen` (window at (−32000, −32000)); `park = underneath` is the fallback (layered, alpha 0, under the presenter).
+- The game window is **hidden on-screen** (layered alpha 0, click-through, bottom of the z-order, inside its monitor's work area). Off-screen parking does not work (spec §2 correction, found in Task 5); there is no `park` option.
 
 **Deviations from the spec, decided while planning (record them in the spec at Task 13):**
-1. The parked position is enforced by the `Glue` subclass on `WM_WINDOWPOSCHANGING` (catches `SetWindowPos`, `MoveWindow` and everything else) instead of a `SetWindowPos` IAT hook.
+1. The hidden position is enforced by the `Glue` subclass on `WM_WINDOWPOSCHANGING` (catches `SetWindowPos`, `MoveWindow` and everything else) instead of a `SetWindowPos` IAT hook.
 2. A2.1 always reports the game window as active (= `background = run`); the `background` key is added in A2.4 as the spec says.
 3. At 1:1 the presenter copies the frame with `CopySubresourceRegion` (exact, no shader); the scaling shader arrives with A2.2.
 
@@ -55,10 +57,10 @@ src/core/
                         filter_activation
   content_rect.{h,cpp}  choose_content_rect
   luma.{h,cpp}          mean_luma
-  config.{h,cpp}        + ParkMode park ("display.park")
+  viewport (extended)   + keep_inside
 src/platform/
   window_capture.{h,cpp}     WindowCapture
-  parking.{h,cpp}            ParkState, park_offscreen, park_underneath, unpark
+  hidden_window.{h,cpp}      HiddenState, hide_window, unhide_window
   window_subclass.{h,cpp}    Subclass
   child_input.{h,cpp}        deepest_child_at, post_mouse, post_key
   presenter_d3d11.{h,cpp}    D3DPresenter
@@ -68,7 +70,7 @@ src/wing32/
   hooks.cpp             GetCursorPos fakes, + GetAsyncKeyState, + SetCursor, CreateWindowExA → a2
 tools/luma_probe/       dev tool for the fade check
 tests/core/             viewport_test, input_map_test, content_rect_test, luma_test (+ config_test)
-tests/platform/         test_window.h; window_capture_test, parking_test, window_subclass_test,
+tests/platform/         test_window.h; window_capture_test, hidden_window_test, window_subclass_test,
                         child_input_test, presenter_d3d11_test, presenter_window_test
 docs/smoke-test.md, docs/re-notes/a2-1-exit.md
 ```
@@ -817,8 +819,6 @@ inline void pump() {
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <dwmapi.h>
-
 using hr::platform::WindowCapture;
 
 namespace {
@@ -849,15 +849,11 @@ TEST_CASE("window_capture rejects an empty source", "[window_capture]") {
     DestroyWindow(window);
 }
 
-TEST_CASE("window_capture sees live drawing of a window parked off-screen", "[window_capture]") {
-    BOOL composition = FALSE;
-    DwmIsCompositionEnabled(&composition);
-    if (!composition) {
-        SKIP("desktop composition is not available in this session");
-    }
+TEST_CASE("window_capture sees live drawing of a window covered by another window",
+          "[window_capture]") {
     const HWND window = hr::test::make_window(100, 100, 200, 150);
-    hr::test::pump();
-    SetWindowPos(window, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    const HWND cover = hr::test::make_window(50, 50, 400, 300);
+    SetWindowPos(cover, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     hr::test::pump();
 
     // Draw like the game does: straight to the window DC, outside WM_PAINT.
@@ -873,6 +869,7 @@ TEST_CASE("window_capture sees live drawing of a window parked off-screen", "[wi
     REQUIRE(capture.capture(window, {0, 0, 200, 150}));
     CHECK(rgb_at(capture, 105, 55) == 0x0000FF);
     CHECK(rgb_at(capture, 25, 35) == 0xFF0000);
+    DestroyWindow(cover);
     DestroyWindow(window);
 }
 ```
@@ -900,7 +897,8 @@ Expected: FAIL with `Cannot open include file: 'platform/window_capture.h'`.
 namespace hr::platform {
 
 // Copies a region of a window's composed client area (via its window DC) into a 32-bit
-// top-down DIB. Works for windows parked off-screen (A2 spike). Pixels are 0x??RRGGBB.
+// top-down DIB. Works for windows covered by others or hidden on-screen (A2 spec §2); NOT for
+// windows off-screen, whose drawing GDI clips. Pixels are 0x??RRGGBB.
 class WindowCapture {
 public:
     WindowCapture() = default;
@@ -996,11 +994,7 @@ bool WindowCapture::capture(HWND window, core::Rect source) {
 } // namespace hr::platform
 ```
 
-In `src/platform/CMakeLists.txt` add `window_capture.cpp` to `hr_platform` and link DWM for the tests:
-
-```cmake
-target_link_libraries(hr_platform PUBLIC hr_core dwmapi PRIVATE hr_warnings)
-```
+In `src/platform/CMakeLists.txt` add `window_capture.cpp` to `hr_platform`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1017,79 +1011,122 @@ git commit -m "platform: capture a window's composed client area" -m "Co-Authore
 git push
 ```
 
-If CI later reports the off-screen test failing on the GitHub runner, change its skip condition to "the on-screen capture of the same window returns an all-black frame" (no composited desktop) — not to a blanket skip.
+If CI reports the capture tests failing on the GitHub runner because its session has no composited desktop (all-black captures), add a skip guarded by exactly that observation — not a blanket skip.
 
 ---
 
-### Task 6: Parking and unparking (platform)
+### Task 6: Hiding the game window on-screen (core + platform), removing `park`
 
 **Files:**
-- Create: `src/platform/parking.h`, `src/platform/parking.cpp`
+- Modify: `src/core/viewport.h`, `src/core/viewport.cpp`, `tests/core/viewport_test.cpp`
+- Modify: `src/core/config.h`, `src/core/config.cpp`, `tests/core/config_test.cpp` (remove `park`)
+- Create: `src/platform/hidden_window.h`, `src/platform/hidden_window.cpp`
 - Modify: `src/platform/CMakeLists.txt`, `tests/platform/CMakeLists.txt`
-- Test: `tests/platform/parking_test.cpp`
+- Test: `tests/platform/hidden_window_test.cpp`
 
 **Interfaces:**
 - Produces:
-  - `struct hr::platform::ParkState { RECT window_rect{}; LONG_PTR ex_style = 0; bool parked = false; };`
-  - `inline constexpr POINT hr::platform::kOffscreen{-32000, -32000};`
-  - `ParkState park_offscreen(HWND window);` — moves to `kOffscreen`, keeps size, no activation.
-  - `ParkState park_underneath(HWND window, POINT client_origin);` — adds `WS_EX_LAYERED` with alpha 0 and moves so the client origin is at `client_origin` (screen).
-  - `void unpark(HWND window, const ParkState& state);` — restores the extended style, moves to (0,0), shows; no-op if `!state.parked`.
+  - `Point hr::core::keep_inside(Rect window, Rect area);` — top-left position that puts `window` fully inside `area`, moving it as little as possible; aligned to the area's top-left when it is larger than the area.
+  - `struct hr::platform::HiddenState { RECT window_rect{}; LONG_PTR ex_style = 0; bool hidden = false; };`
+  - `HiddenState hide_window(HWND window, RECT area);` — adds `WS_EX_LAYERED | WS_EX_TRANSPARENT`, alpha 0, bottom of the z-order, position from `keep_inside`, no activation.
+  - `void unhide_window(HWND window, const HiddenState& state);` — restores the extended style, moves to (0,0), shows; no-op if `!state.hidden`.
+- Removes: `ParkMode`, `Config::park`, the `display.park` INI key (committed in Task 3).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-`tests/platform/parking_test.cpp`:
+Append to `tests/core/viewport_test.cpp`:
 
 ```cpp
-#include "platform/parking.h"
+TEST_CASE("keep_inside moves a window as little as possible to fit an area", "[viewport]") {
+    const Rect area{0, 0, 1920, 1040};
+    CHECK(keep_inside({100, 100, 656, 520}, area) == Point{100, 100});
+    CHECK(keep_inside({-150, 100, 656, 520}, area) == Point{0, 100});
+    CHECK(keep_inside({1800, 900, 656, 520}, area) == Point{1264, 520});
+    CHECK(keep_inside({-32000, -32000, 656, 520}, area) == Point{0, 0});
+    CHECK(keep_inside({50, 50, 4000, 3000}, area) == Point{0, 0});
+    CHECK(keep_inside({1950, 10, 100, 100}, Rect{1920, 0, 1920, 1080}) == Point{1950, 10});
+}
+```
+
+`tests/platform/hidden_window_test.cpp`:
+
+```cpp
+#include "platform/hidden_window.h"
+#include "platform/window_capture.h"
 #include "test_window.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace hr::platform;
 
-TEST_CASE("park_offscreen moves a window away and unpark brings it back to (0,0)", "[parking]") {
-    const HWND window = hr::test::make_window(100, 100, 200, 150);
+namespace {
+RECT work_area() {
+    RECT area{};
+    SystemParametersInfoA(SPI_GETWORKAREA, 0, &area, 0);
+    return area;
+}
+} // namespace
+
+TEST_CASE("hide_window makes a window invisible, click-through and fully on-screen",
+          "[hidden_window]") {
+    const HWND window = hr::test::make_window(-150, 100, 200, 150);
     hr::test::pump();
-    const ParkState state = park_offscreen(window);
-    CHECK(state.parked);
+    const RECT area = work_area();
+    const HiddenState state = hide_window(window, area);
+    CHECK(state.hidden);
+
     RECT r{};
     GetWindowRect(window, &r);
-    CHECK(r.left == -32000);
-    CHECK(r.top == -32000);
+    CHECK(r.left >= area.left);
+    CHECK(r.top >= area.top);
+    CHECK(r.right <= area.right);
+    CHECK(r.bottom <= area.bottom);
     CHECK(r.right - r.left == 200);
 
-    unpark(window, state);
-    GetWindowRect(window, &r);
-    CHECK(r.left == 0);
-    CHECK(r.top == 0);
-    CHECK(r.right - r.left == 200);
-    CHECK(IsWindowVisible(window));
-    DestroyWindow(window);
-}
-
-TEST_CASE("park_underneath hides the window with its client at the given position", "[parking]") {
-    const HWND window = hr::test::make_window(100, 100, 200, 150);
-    hr::test::pump();
-    const ParkState state = park_underneath(window, POINT{300, 200});
-    POINT origin{0, 0};
-    ClientToScreen(window, &origin);
-    CHECK(origin.x == 300);
-    CHECK(origin.y == 200);
+    const LONG_PTR ex = GetWindowLongPtrA(window, GWL_EXSTYLE);
+    CHECK((ex & WS_EX_LAYERED) != 0);
+    CHECK((ex & WS_EX_TRANSPARENT) != 0);
     BYTE alpha = 255;
     DWORD flags = 0;
     REQUIRE(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags));
     CHECK(alpha == 0);
-    CHECK((flags & LWA_ALPHA) != 0);
 
-    unpark(window, state);
-    CHECK((GetWindowLongPtrA(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0);
+    unhide_window(window, state);
+    CHECK((GetWindowLongPtrA(window, GWL_EXSTYLE) & (WS_EX_LAYERED | WS_EX_TRANSPARENT)) == 0);
+    GetWindowRect(window, &r);
+    CHECK(r.left == 0);
+    CHECK(r.top == 0);
+    CHECK(IsWindowVisible(window));
     DestroyWindow(window);
 }
 
-TEST_CASE("unpark of a window that was never parked does nothing", "[parking]") {
+TEST_CASE("a hidden window under another window still delivers live drawing to the capture",
+          "[hidden_window]") {
+    const HWND window = hr::test::make_window(100, 100, 200, 150);
+    hr::test::pump();
+    const HiddenState state = hide_window(window, work_area());
+    const HWND cover = hr::test::make_window(0, 0, 800, 600);
+    hr::test::pump();
+
+    const HDC dc = GetDC(window);
+    const RECT square{100, 50, 110, 60};
+    const HBRUSH blue = CreateSolidBrush(RGB(0, 0, 255));
+    FillRect(dc, &square, blue);
+    DeleteObject(blue);
+    ReleaseDC(window, dc);
+    GdiFlush();
+
+    WindowCapture capture;
+    REQUIRE(capture.capture(window, {0, 0, 200, 150}));
+    CHECK((capture.pixels()[55 * 200 + 105] & 0xFFFFFF) == 0x0000FFu);
+    unhide_window(window, state);
+    DestroyWindow(cover);
+    DestroyWindow(window);
+}
+
+TEST_CASE("unhide of a window that was never hidden does nothing", "[hidden_window]") {
     const HWND window = hr::test::make_window(100, 100, 50, 50);
-    unpark(window, ParkState{});
+    unhide_window(window, HiddenState{});
     RECT r{};
     GetWindowRect(window, &r);
     CHECK(r.left == 100);
@@ -1097,16 +1134,41 @@ TEST_CASE("unpark of a window that was never parked does nothing", "[parking]") 
 }
 ```
 
-Add `parking_test.cpp` to `platform_tests`.
+Remove the `TEST_CASE("the park mode is read and defaults to off-screen", ...)` block from `tests/core/config_test.cpp` (the feature is removed; the remaining config tests, including the default-file round trip, guard the removal).
 
-- [ ] **Step 2: Run the test to verify it fails**
+Add `hidden_window_test.cpp` to `platform_tests`.
+
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `. ./tools/vsenv.ps1; cmake --preset x86-debug; cmake --build --preset x86-debug`
-Expected: FAIL with `Cannot open include file: 'platform/parking.h'`.
+Expected: FAIL with `Cannot open include file: 'platform/hidden_window.h'` and `'keep_inside': identifier not found`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [ ] **Step 3: Write the implementation and remove `park`**
 
-`src/platform/parking.h`:
+Add to `src/core/viewport.h`:
+
+```cpp
+// Top-left position that puts `window` fully inside `area`, moving it as little as possible; a
+// window larger than the area is aligned to the area's top-left.
+Point keep_inside(Rect window, Rect area);
+```
+
+Add to `src/core/viewport.cpp`:
+
+```cpp
+Point keep_inside(Rect window, Rect area) {
+    const auto axis = [](int pos, int size, int start, int length) {
+        if (size >= length) {
+            return start;
+        }
+        return std::clamp(pos, start, start + length - size);
+    };
+    return {axis(window.x, window.width, area.x, area.width),
+            axis(window.y, window.height, area.y, area.height)};
+}
+```
+
+`src/platform/hidden_window.h`:
 
 ```cpp
 #pragma once
@@ -1115,68 +1177,51 @@ Expected: FAIL with `Cannot open include file: 'platform/parking.h'`.
 
 namespace hr::platform {
 
-// What park_* changed, so unpark can undo it.
-struct ParkState {
+// What hide_window changed, so unhide_window can undo it.
+struct HiddenState {
     RECT window_rect{};
     LONG_PTR ex_style = 0;
-    bool parked = false;
+    bool hidden = false;
 };
 
-inline constexpr POINT kOffscreen{-32000, -32000};
+// Makes `window` invisible (layered, alpha 0) and click-through, puts it at the bottom of the
+// z-order and moves it (if needed) fully inside `area` (screen coordinates). It must stay
+// on-screen: GDI clips drawing to the on-screen part of a window (A2 spec §2 correction).
+HiddenState hide_window(HWND window, RECT area);
 
-// Option A: keep the window composed but out of sight.
-ParkState park_offscreen(HWND window);
-
-// Option C: keep the window in place under the presenter, fully transparent.
-ParkState park_underneath(HWND window, POINT client_origin);
-
-// Undo either: original extended style, window at (0,0), shown. The "never worse than vanilla"
-// exit for every presenter failure (spec §7).
-void unpark(HWND window, const ParkState& state);
+// The "never worse than vanilla" exit (spec §7): original extended style, window at (0,0), shown.
+void unhide_window(HWND window, const HiddenState& state);
 
 } // namespace hr::platform
 ```
 
-`src/platform/parking.cpp`:
+`src/platform/hidden_window.cpp`:
 
 ```cpp
-#include "platform/parking.h"
+#include "platform/hidden_window.h"
+
+#include "core/viewport.h"
 
 namespace hr::platform {
-namespace {
 
-ParkState remember(HWND window) {
-    ParkState state;
+HiddenState hide_window(HWND window, RECT area) {
+    HiddenState state;
     GetWindowRect(window, &state.window_rect);
     state.ex_style = GetWindowLongPtrA(window, GWL_EXSTYLE);
-    state.parked = true;
-    return state;
-}
+    state.hidden = true;
 
-constexpr UINT kMoveOnly = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
-
-} // namespace
-
-ParkState park_offscreen(HWND window) {
-    const ParkState state = remember(window);
-    SetWindowPos(window, nullptr, kOffscreen.x, kOffscreen.y, 0, 0, kMoveOnly);
-    return state;
-}
-
-ParkState park_underneath(HWND window, POINT client_origin) {
-    const ParkState state = remember(window);
-    SetWindowLongPtrA(window, GWL_EXSTYLE, state.ex_style | WS_EX_LAYERED);
+    SetWindowLongPtrA(window, GWL_EXSTYLE, state.ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT);
     SetLayeredWindowAttributes(window, 0, 0, LWA_ALPHA);
-    POINT origin{0, 0};
-    ClientToScreen(window, &origin);
-    const int dx = origin.x - state.window_rect.left;
-    const int dy = origin.y - state.window_rect.top;
-    SetWindowPos(window, nullptr, client_origin.x - dx, client_origin.y - dy, 0, 0, kMoveOnly);
+    const RECT& r = state.window_rect;
+    const core::Point pos =
+        core::keep_inside({r.left, r.top, r.right - r.left, r.bottom - r.top},
+                          {area.left, area.top, area.right - area.left, area.bottom - area.top});
+    SetWindowPos(window, HWND_BOTTOM, pos.x, pos.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     return state;
 }
 
-void unpark(HWND window, const ParkState& state) {
-    if (!state.parked) {
+void unhide_window(HWND window, const HiddenState& state) {
+    if (!state.hidden) {
         return;
     }
     SetWindowLongPtrA(window, GWL_EXSTYLE, state.ex_style);
@@ -1187,20 +1232,22 @@ void unpark(HWND window, const ParkState& state) {
 } // namespace hr::platform
 ```
 
-Add `parking.cpp` to `hr_platform`.
+Add `hidden_window.cpp` to `hr_platform`.
+
+Remove `park`: in `src/core/config.h` delete `enum class ParkMode { Offscreen, Underneath };` and the `ParkMode park = ParkMode::Offscreen;` member; in `src/core/config.cpp` delete the `display.park` entry of `kFields` and the `park = offscreen ...` line of `default_config_ini()`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `. ./tools/vsenv.ps1; cmake --preset x86-debug; cmake --build --preset x86-debug; ctest --preset x86-debug -L "^parking$"`
-Expected: `100% tests passed, 0 tests failed out of 3`.
+Run: `. ./tools/vsenv.ps1; cmake --preset x86-debug; cmake --build --preset x86-debug; ctest --preset x86-debug -L "^(viewport|config|hidden_window)$"`
+Expected: `100% tests passed, 0 tests failed out of 18` (7 viewport + 8 config + 3 hidden_window).
 
 - [ ] **Step 5: Format and commit**
 
 Run Format, then:
 
 ```bash
-git add src/platform tests/platform
-git commit -m "platform: park and unpark a window" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git add src/core src/platform tests/core tests/platform
+git commit -m "platform: hide the game window on-screen; drop the park option" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2207,7 +2254,7 @@ git commit -m "platform: presenter window reporting input" -m "Co-Authored-By: C
 
 **Interfaces:**
 - Consumes: `platform::WindowCapture` (Task 5), `core::mean_luma` (Task 4).
-- Produces: `bin/luma_probe.exe <seconds> <output.csv>` — records `t,luma` of the game's main window (`Glue`) every ~5 ms; works with the window on-screen (vanilla) or parked (A2).
+- Produces: `bin/luma_probe.exe <seconds> <output.csv>` — records `t,luma` of the game's main window (`Glue`) every ~5 ms; works for vanilla and with A2 (window hidden on-screen).
 
 The probe is glue around two tested units, so its check is a run: before the game is running it must fail cleanly; that is the red step.
 
@@ -2218,7 +2265,7 @@ The probe is glue around two tested units, so its check is a run: before the gam
 ```cpp
 // Dev tool for the A2.1 fade check: records the mean brightness of the game's composed picture.
 //   luma_probe <seconds> <output.csv>
-// Works for vanilla (window on-screen) and with A2 (window parked). Never commit its output.
+// Works for vanilla (window on-screen) and with A2 (window hidden on-screen). Never commit its output.
 #include "core/luma.h"
 #include "platform/window_capture.h"
 
@@ -2312,7 +2359,7 @@ git commit -m "tools: brightness probe for the fade check" -m "Co-Authored-By: C
 - Modify: `src/wing32/hooks.cpp`, `src/wing32/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1–10; `wing32::settings()` (A1).
+- Consumes: everything from Tasks 1–10 (`hide_window`/`unhide_window` from Task 6); `wing32::settings()` (A1).
 - Produces (namespace `hr::wing32::a2`):
   - `void on_window_created(HWND window, HWND parent, DWORD style);`
   - `bool active();`
@@ -2339,10 +2386,10 @@ namespace hr::wing32::a2 {
 // first top-level window (the game's main window, A1 finding).
 void on_window_created(HWND window, HWND parent, DWORD style);
 
-// True while the presenter shows the game and its main window is parked.
+// True while the presenter shows the game and its main window is hidden.
 bool active();
 
-// GetCursorPos replacement while active: the virtual cursor in the parked window's screen space.
+// GetCursorPos replacement while active: the virtual cursor in the hidden window's screen space.
 void fake_cursor_pos(POINT& out);
 
 // GetAsyncKeyState while active: true if a mouse button must be reported as "up".
@@ -2366,7 +2413,7 @@ void set_game_cursor(HCURSOR cursor);
 #include "core/viewport.h"
 #include "platform/child_input.h"
 #include "platform/log.h"
-#include "platform/parking.h"
+#include "platform/hidden_window.h"
 #include "platform/presenter_d3d11.h"
 #include "platform/presenter_window.h"
 #include "platform/window_capture.h"
@@ -2375,7 +2422,6 @@ void set_game_cursor(HCURSOR cursor);
 
 #include <atomic>
 #include <chrono>
-#include <climits>
 #include <cstdio>
 #include <exception>
 #include <optional>
@@ -2400,8 +2446,8 @@ std::atomic<int> g_content_x{0};
 std::atomic<int> g_content_y{0};
 std::atomic<int> g_content_w{640};
 std::atomic<int> g_content_h{480};
-std::atomic<int> g_park_x{0};
-std::atomic<int> g_park_y{0};
+std::atomic<int> g_hidden_x{0}; // hidden position, enforced while active
+std::atomic<int> g_hidden_y{0};
 
 core::Rect content_rect() {
     return {g_content_x.load(), g_content_y.load(), g_content_w.load(), g_content_h.load()};
@@ -2435,8 +2481,8 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
         } else if (msg == WM_WINDOWPOSCHANGING) {
             auto* const pos = reinterpret_cast<WINDOWPOS*>(lparam);
             if ((pos->flags & SWP_NOMOVE) == 0) {
-                pos->x = g_park_x;
-                pos->y = g_park_y;
+                pos->x = g_hidden_x;
+                pos->y = g_hidden_y;
             }
         }
     }
@@ -2473,33 +2519,15 @@ private:
     core::Rect dest_{0, 0, 640, 480};
 };
 
-// Keeps the hidden game window exactly under the presenter (park = underneath).
-void follow_presenter(HWND glue, HWND presenter, POINT& last_origin) {
-    POINT origin{0, 0};
-    ClientToScreen(presenter, &origin);
-    if (origin.x == last_origin.x && origin.y == last_origin.y) {
-        return;
-    }
-    last_origin = origin;
-    RECT window{};
-    GetWindowRect(glue, &window);
-    POINT glue_origin{0, 0};
-    ClientToScreen(glue, &glue_origin);
-    g_park_x = origin.x - (glue_origin.x - window.left);
-    g_park_y = origin.y - (glue_origin.y - window.top);
-    SetWindowPos(glue, nullptr, g_park_x, g_park_y, 0, 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-}
-
-void stop_with_unpark(HWND glue, const platform::ParkState& state, const std::string& reason) {
+void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
     g_active = false;
-    platform::unpark(glue, state);
-    platform::log("presenter: game window unparked (" + reason + ")");
+    platform::unhide_window(glue, state);
+    platform::log("presenter: game window unhidden (" + reason + ")");
 }
 
 void presenter_main() {
     const HWND glue = g_glue;
-    platform::ParkState park_state;
+    platform::HiddenState hidden_state;
     try {
         const core::Config& config = settings().config;
         Input input;
@@ -2526,24 +2554,19 @@ void presenter_main() {
         // Never destroyed: the game thread may be inside it at any time until the process ends.
         static platform::Subclass subclass(glue, &glue_proc);
 
-        const bool underneath = config.park == core::ParkMode::Underneath;
-        if (underneath) {
-            POINT origin{0, 0};
-            ClientToScreen(window.hwnd(), &origin);
-            park_state = platform::park_underneath(glue, origin);
-        } else {
-            park_state = platform::park_offscreen(glue);
-        }
-        RECT parked{};
-        GetWindowRect(glue, &parked);
-        g_park_x = parked.left;
-        g_park_y = parked.top;
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof monitor;
+        GetMonitorInfoA(MonitorFromWindow(glue, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        hidden_state = platform::hide_window(glue, monitor.rcWork);
+        RECT hidden{};
+        GetWindowRect(glue, &hidden);
+        g_hidden_x = hidden.left;
+        g_hidden_y = hidden.top;
         g_active = true;
         window.show();
-        platform::log(std::string("presenter: running, game window parked ") +
-                      (underneath ? "underneath" : "off-screen"));
+        platform::log("presenter: running, game window hidden at (" + std::to_string(hidden.left) +
+                      "," + std::to_string(hidden.top) + ")");
 
-        POINT last_origin{INT_MIN, INT_MIN};
         auto last_good = Clock::now();
         auto stats_start = Clock::now();
         double capture_ms = 0.0;
@@ -2555,9 +2578,6 @@ void presenter_main() {
                 TranslateMessage(&msg);
                 DispatchMessageA(&msg);
             }
-            if (underneath) {
-                follow_presenter(glue, window.hwnd(), last_origin);
-            }
             const core::Rect content = find_content_rect(glue);
             store_content_rect(content);
             const core::Rect dest = core::centered_rect(kPresenterSize, {content.width, content.height});
@@ -2567,7 +2587,7 @@ void presenter_main() {
             if (capture.capture(glue, content)) {
                 last_good = t0;
             } else if (t0 - last_good > std::chrono::seconds(2)) {
-                stop_with_unpark(glue, park_state, "capture failed for 2 s");
+                stop_with_unhide(glue, hidden_state, "capture failed for 2 s");
                 return;
             }
             const auto t1 = Clock::now();
@@ -2596,12 +2616,12 @@ void presenter_main() {
     } catch (const std::exception& e) {
         platform::log_exception("presenter", e.what());
         if (!g_stop) {
-            stop_with_unpark(glue, park_state, "exception");
+            stop_with_unhide(glue, hidden_state, "exception");
         }
     } catch (...) {
         platform::log_exception("presenter", nullptr);
         if (!g_stop) {
-            stop_with_unpark(glue, park_state, "exception");
+            stop_with_unhide(glue, hidden_state, "exception");
         }
     }
 }
@@ -2742,7 +2762,7 @@ Run Format, then:
 
 ```bash
 git add src/wing32
-git commit -m "wing32: A2 presenter thread, parking and input path at 1:1" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "wing32: A2 presenter thread, hiding and input path at 1:1" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git push
 ```
 
@@ -2769,7 +2789,8 @@ Append to the checklist in `docs/smoke-test.md`:
 - [ ] The intro/briefing videos play inside the presenter.
 - [ ] Clicking on the desktop or another window does not click inside the game.
 - [ ] Closing the presenter quits the game normally.
-- [ ] `park = underneath` in horned-rat.ini: all of the above still works.
+- [ ] Dragging the presenter partly off-screen: the picture keeps updating everywhere.
+- [ ] Other windows stay clickable where the hidden game window lies (it is click-through).
 - [ ] Panic switch `enabled = false`: the game runs as vanilla (no presenter).
 - [ ] `horned-rat.log` shows `presenter: running`, 10-second performance lines, and no `exception`.
 ```
@@ -2779,9 +2800,9 @@ Append to the checklist in `docs/smoke-test.md`:
 Run: `. ./tools/vsenv.ps1; cmake --preset x86-release; cmake --build --preset x86-release; ./tools/install.ps1 -GameDir 'D:\Program Files (x86)\GOG Galaxy\Games\Warhammer - Shadow of the Horned Rat' -SourceDll build/x86-release/bin/wing32.dll`
 Expected: `Installed horned-rat into '...\WARFB'.`
 
-- [ ] **Step 3: The user runs the smoke test with `park = offscreen`, then with `park = underneath`**
+- [ ] **Step 3: The user runs the smoke test**
 
-Edit `WARFB\horned-rat.ini` between runs. Record pass/fail per item, the presenter log lines (device, performance) and anything that differs from vanilla.
+Record pass/fail per item, the presenter log lines (device, performance) and anything that differs from vanilla.
 
 - [ ] **Step 4: Fade check**
 
@@ -2789,7 +2810,7 @@ Vanilla: set `enabled = false`, start the game, then run `build/x86-release/bin/
 
 - [ ] **Step 5: Write the exit notes and update the spec**
 
-`docs/re-notes/a2-1-exit.md`: date, build hash, smoke-test results for A and C, the presenter's performance lines, the fade-check result (ramps present in vanilla? in A2?), and decisions: which park mode is the default going forward, whether "restore palette effects" becomes a separate item. In the spec, add the three planning deviations under §5 and the results to §2/§10.
+`docs/re-notes/a2-1-exit.md`: date, build hash, smoke-test results, the presenter's performance lines, the fade-check result (ramps present in vanilla? in A2?), and whether "restore palette effects" becomes a separate item. In the spec, add the three planning deviations under §5 and the results to §2/§10.
 
 - [ ] **Step 6: Commit, push, mark the PR ready**
 
