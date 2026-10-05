@@ -1,5 +1,10 @@
 // The ten WinG exports. Undecorated names come from wing32.def.
+#include "wing32/hooks.h"
 #include "wing32/runtime.h"
+
+#include <intrin.h>
+
+#pragma intrinsic(_ReturnAddress)
 
 using hr::wing32::original;
 
@@ -35,11 +40,13 @@ HBRUSH WINAPI WinGCreateHalftoneBrush(HDC dc, COLORREF color, int dither_type) {
 
 BOOL WINAPI WinGBitBlt(HDC dest, int x, int y, int width, int height, HDC src, int src_x,
                        int src_y) {
+    hr::wing32::log_wing_bit_blt(_ReturnAddress(), dest, x, y, width, height);
     return original().bit_blt(dest, x, y, width, height, src, src_x, src_y);
 }
 
 BOOL WINAPI WinGStretchBlt(HDC dest, int x, int y, int width, int height, HDC src, int src_x,
                            int src_y, int src_width, int src_height) {
+    hr::wing32::log_wing_stretch_blt(_ReturnAddress(), dest, x, y, width, height);
     return original().stretch_blt(dest, x, y, width, height, src, src_x, src_y, src_width,
                                   src_height);
 }
