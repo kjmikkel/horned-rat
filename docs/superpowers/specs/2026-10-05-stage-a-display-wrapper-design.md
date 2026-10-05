@@ -55,6 +55,13 @@ Taken from the import tables and strings of the GOG binaries:
   (bypassing the WinG DIB) is **unknown** and is resolved by milestone A1.
 - `WHSHR.EXE`, `GAMEF.DLL`, `MINDSYS.DLL` all call `OutputDebugStringA` with ~266
   `[Function] message` style strings.
+- `WHSHR.EXE`, `GAMEF.DLL`, `RLDDF.DLL`, `RL\SOFTF.DLL` and `OMNI000R.DLL` all import
+  `LoadLibraryA` + `GetProcAddress`, so some game modules (at least the Reality Lab driver
+  `SOFTF.DLL`) are loaded **dynamically** after start-up. `SOFTF.DLL` imports `BitBlt` and
+  `SetDIBitsToDevice`, and `OMNI000R.DLL` imports `BitBlt` — possible presentation paths that
+  bypass WinG; resolved by A1.
+- All inspected game modules have import name tables (OriginalFirstThunk), so IAT hooks can
+  match imports by name.
 - `wing32.dll` is shipped locally in `WARFB\` (not a system DLL) and exports exactly 10
   functions: `WinGBitBlt`, `WinGCreateBitmap`, `WinGCreateDC`, `WinGCreateHalftoneBrush`,
   `WinGCreateHalftonePalette`, `WinGGetDIBColorTable`, `WinGGetDIBPointer`,
@@ -65,10 +72,16 @@ Taken from the import tables and strings of the GOG binaries:
 A **proxy `wing32.dll`** placed in `WARFB\`. The original is renamed `wing32_orig.dll`.
 Our DLL:
 
-1. exports the same 10 functions; those we don't intercept forward to the original;
-2. on load, patches the **import address tables** of `WHSHR.EXE` and `GAMEF.DLL` to intercept
-   the GDI/USER32 calls listed in §5;
-3. presents frames via a **Direct3D 11** presenter it owns.
+1. exports the same 10 functions; those we don't intercept forward to the original, which is
+   loaded lazily on the first export call (never `LoadLibrary` under the loader lock in `DllMain`);
+2. patches the **import address tables** of every **game module** — any loaded module whose
+   file lives under the directory of `WHSHR.EXE`, except `wing32.dll`/`wing32_orig.dll` — to
+   intercept the GDI/USER32/KERNEL32 calls listed in §5. Hooks are installed in `DllMain`,
+   re-applied (idempotently) on the first WinG call, and re-applied after every hooked
+   `LoadLibraryA` so dynamically loaded modules are covered;
+3. installs hooks **only when the host executable is `WHSHR.EXE`** (so test executables that
+   load the DLL are never patched);
+4. presents frames via a **Direct3D 11** presenter it owns.
 
 Rejected alternatives: a launcher + DLL injection (no benefit for goal 1, breaks launching
 from GOG Galaxy, more code), and generic wrappers such as DxWnd (no foundation for later
@@ -198,8 +211,9 @@ default used. Config problems never prevent the game from starting.
   game code.
 - D3D11 initialisation failure → the whole DLL switches to **passthrough mode** (all
   original functions, no hooks besides logging), with the reason logged.
-- `wing32_orig.dll` missing → one `MessageBox` naming the problem and the fix
-  (`tools/install.ps1 -Repair`), then the process exits — the game cannot run without it.
+- `wing32_orig.dll` missing → one `MessageBox` naming the problem and the fix (GOG Galaxy
+  "Verify / Repair", then run `tools/install.ps1` again), then the process exits — the game
+  cannot run without it.
 - Panic switch: `enabled = false` or environment variable `HORNED_RAT_DISABLE=1` →
   passthrough mode.
 
@@ -211,14 +225,14 @@ own messages and, when `game_debug = true`, every `OutputDebugStringA` string fr
 
 ### 6.4 `tools/install.ps1`
 
-- `-GameDir <path>` (the folder containing `WARFB\`).
-- Verifies SHA-256 of `WHSHR.EXE` and `wing32.dll` against §8; refuses on mismatch unless
-  `-Force`.
+- `-GameDir <path>`: the GOG folder or its `WARFB\` subfolder.
+- Verifies SHA-256 of `WHSHR.EXE` and the original WinG (`wing32_orig.dll` if already
+  installed, else `wing32.dll`) against §8; refuses on mismatch unless `-Force`.
 - Renames `wing32.dll` → `wing32_orig.dll` only if `wing32_orig.dll` does not yet exist
-  (re-install is safe), copies our `wing32.dll`, writes a default `.ini` if absent.
-- `-Uninstall`: removes our DLL, renames `wing32_orig.dll` back, leaves `.ini`/`.log`.
-- `-Repair`: restores `wing32_orig.dll` from the current `wing32.dll` if it is the original
-  (hash match), otherwise instructs the user to run GOG Galaxy "Verify / Repair".
+  (re-install is safe), then copies our `wing32.dll`.
+- The default `.ini` is written by the DLL on first run (single source of the defaults).
+- `-Uninstall`: removes our DLL, renames `wing32_orig.dll` back, leaves `.ini`/`.log`;
+  if `wing32_orig.dll` is missing it tells the user to use GOG Galaxy "Verify / Repair".
 
 ## 7. Testing and CI
 
