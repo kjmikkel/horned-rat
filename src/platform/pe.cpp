@@ -1,5 +1,7 @@
 #include "platform/pe.h"
 
+#include <cstring>
+
 namespace hr::platform::pe {
 namespace {
 
@@ -32,6 +34,38 @@ std::vector<std::string> export_names(HMODULE module) {
         out.emplace_back(reinterpret_cast<const char*>(base + names[i]));
     }
     return out;
+}
+
+void** find_import_slot(HMODULE module, const char* dll, const char* function) {
+    const auto base = reinterpret_cast<BYTE*>(module);
+    const auto nt = nt_headers(base);
+    if (nt == nullptr) {
+        return nullptr;
+    }
+    const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (dir.VirtualAddress == 0) {
+        return nullptr;
+    }
+    for (auto desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress);
+         desc->Name != 0; ++desc) {
+        if (_stricmp(reinterpret_cast<const char*>(base + desc->Name), dll) != 0 ||
+            desc->OriginalFirstThunk == 0) {
+            continue;
+        }
+        auto names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + desc->OriginalFirstThunk);
+        auto slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + desc->FirstThunk);
+        for (; names->u1.AddressOfData != 0; ++names, ++slots) {
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) {
+                continue;
+            }
+            const auto by_name =
+                reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData);
+            if (std::strcmp(reinterpret_cast<const char*>(by_name->Name), function) == 0) {
+                return reinterpret_cast<void**>(&slots->u1.Function);
+            }
+        }
+    }
+    return nullptr;
 }
 
 } // namespace hr::platform::pe
