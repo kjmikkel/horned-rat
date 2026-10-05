@@ -141,7 +141,7 @@ into `platform`/`core` inside the exception guard (§6).
 
 ### 5.1 Frames out
 
-> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
+> **Superseded by the A1 findings (§2.1)** — kept for history; Replaced by `2026-10-05-stage-a2-presenter-design.md`.
 
 ```
 game writes pixels ──► WinG DIB (640×480, 8-bit)
@@ -165,7 +165,7 @@ Present thread: snapshot ShadowFrame + palette under a mutex
 
 ### 5.2 Palette
 
-> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
+> **Superseded by the A1 findings (§2.1)** — kept for history; Replaced by `2026-10-05-stage-a2-presenter-design.md`.
 
 `PaletteTracker` models the **logical palette realised for the game window**, because on a
 real 8-bit display `AnimatePalette` changed on-screen colours without touching pixels or the
@@ -189,7 +189,7 @@ if it does not, the rule is revised before A2.
 
 ### 5.4 Mouse in
 
-> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
+> **Superseded by the A1 findings (§2.1)** — kept for history; Replaced by `2026-10-05-stage-a2-presenter-design.md`.
 
 - Subclass the main window procedure; for all `WM_*MOUSE*` / `WM_*BUTTON*` messages, map
   `lParam` from client coordinates to game coordinates via `core/viewport`. Points in the
