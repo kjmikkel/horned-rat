@@ -23,6 +23,15 @@ jobs:
         run: cmake --build --preset ci
       - name: Test
         run: ctest --preset ci
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/ci/bin/wing32.dll dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horned-rat-windows-x86
+          path: dist/
 
   linux-core:
     runs-on: ubuntu-latest
