@@ -1,7 +1,7 @@
 # Stage A: Display Wrapper — Design
 
 - **Date:** 2026-10-05
-- **Status:** Approved in brainstorming, awaiting spec review
+- **Status:** A0 and A1 implemented. §5.1, §5.2 and §5.4 are **superseded by the A1 findings** and will be redesigned in A2 brainstorming (see §2.1).
 - **Scope:** Stage A of the horned-rat project (clean scaling of the existing 640×480 output).
   Stage B (higher internal resolution / more visible battlefield) gets its own spec later.
 
@@ -67,6 +67,23 @@ Taken from the import tables and strings of the GOG binaries:
   `WinGCreateHalftonePalette`, `WinGGetDIBColorTable`, `WinGGetDIBPointer`,
   `WinGRecommendDIBFormat`, `WinGSetDIBColorTable`, `WinGStretchBlt`.
 
+### 2.1 A1 findings (2026-10-05)
+
+Full write-up: `docs/re-notes/a1-findings.md`. In short:
+
+- The screen is a **tree of child windows** under the main `Glue` window (which the game moves
+  to (0,0) at 640×480). Drawing goes directly to window DCs of a dozen child windows:
+  `WinGBitBlt` (menus, the 417×296 battle 3D view `Map3DClass`, map and icon windows),
+  `StretchDIBits` (frame strips), `TextOutA` (thousands of direct text draws), `BitBlt` from the
+  video player `OMNI000R.DLL`, plus standard USER32 `Button`/`Edit` controls that Windows paints
+  itself, invisible to any game-module hook.
+- Reality Lab renders battles through a **memory driver**; `SOFTF.DLL` never presents directly.
+- Mouse: constant `GetCursorPos` + `ScreenToClient` polling; no `SetCursorPos`/`ClipCursor`.
+- `USER32!ChangeDisplaySettingsA` is resolved via `GetProcAddress` (bypasses IAT hooks).
+- Consequence: per-blit capture into one `ShadowFrame` (§5.1) is not viable as specified; A2
+  must capture the **composed** window (or let Windows scale it) and deliver input to the real
+  child windows. Options are listed in the findings document.
+
 ## 3. Approach
 
 A **proxy `wing32.dll`** placed in `WARFB\`. The original is renamed `wing32_orig.dll`.
@@ -124,6 +141,8 @@ into `platform`/`core` inside the exception guard (§6).
 
 ### 5.1 Frames out
 
+> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
+
 ```
 game writes pixels ──► WinG DIB (640×480, 8-bit)
 WinGBitBlt / WinGStretchBlt / StretchDIBits targeting the game window DC
@@ -146,6 +165,8 @@ Present thread: snapshot ShadowFrame + palette under a mutex
 
 ### 5.2 Palette
 
+> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
+
 `PaletteTracker` models the **logical palette realised for the game window**, because on a
 real 8-bit display `AnimatePalette` changed on-screen colours without touching pixels or the
 DIB colour table. Hooks: `CreatePalette` (record initial entries per `HPALETTE`),
@@ -167,6 +188,8 @@ if it does not, the rule is revised before A2.
 - The D3D11 swapchain owns the client area; the game's GDI blits to the window never reach it.
 
 ### 5.4 Mouse in
+
+> **Superseded by the A1 findings (§2.1)** — kept for history; A2 redesigns this.
 
 - Subclass the main window procedure; for all `WM_*MOUSE*` / `WM_*BUTTON*` messages, map
   `lParam` from client coordinates to game coordinates via `core/viewport`. Points in the
@@ -292,9 +315,9 @@ Each milestone leaves the game playable.
 
 | Risk | Mitigation |
 |---|---|
-| Some drawing bypasses the WinG DIB (window-DC `TextOutA`/`PatBlt`, etc.) | A1 instrumentation answers it before A2 relies on it |
-| Game reads back from the window DC (e.g. `BitBlt` from screen) | A1 logging covers DC sources too; emulate from ShadowFrame if seen |
+| Some drawing bypasses the WinG DIB (window-DC `TextOutA`/`PatBlt`, etc.) | **Confirmed by A1** (§2.1): drawing goes to many child windows, incl. USER32-painted controls. A2 redesigns capture |
+| Game reads back from the window DC (e.g. `BitBlt` from screen) | Not observed in A1 |
 | Cursor drawn by Windows (`SetCursor`) stays small when scaled | Acceptable for Stage A; scaled cursor considered in A4 |
-| Mouse code uses an API we didn't map (e.g. `GetMessagePos`, `WM_NCHITTEST`) | A1 logs USER32 cursor/mouse API usage; add mappings as found, each with a test |
+| Mouse code uses an API we didn't map (e.g. `GetMessagePos`, `WM_NCHITTEST`) | A1: only `GetCursorPos`/`ScreenToClient`/`ClientToScreen` seen, but standard controls need real mouse messages at the right child window (§2.1) |
 | Timing changes from vsync/present thread | Present thread is decoupled from game thread; `vsync = false` escape hatch |
 | Other builds of the game (CD release) | Hash check in installer; out of scope |

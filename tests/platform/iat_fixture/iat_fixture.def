@@ -1,0 +1,3 @@
+LIBRARY iat_fixture
+EXPORTS
+    Fixture_Add
