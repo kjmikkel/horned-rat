@@ -91,6 +91,11 @@ constexpr Field kFields[] = {
                                                               {"stretch", AspectMode::Stretch}}));
      }},
     {"display.vsync", [](Config& c, std::string_view v) { return assign(c.vsync, parse_bool(v)); }},
+    {"display.park",
+     [](Config& c, std::string_view v) {
+         return assign(c.park, parse_choice<ParkMode>(v, {{"offscreen", ParkMode::Offscreen},
+                                                          {"underneath", ParkMode::Underneath}}));
+     }},
     {"debug.log", [](Config& c, std::string_view v) { return assign(c.log, parse_bool(v)); }},
     {"debug.game_debug",
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
@@ -137,6 +142,7 @@ window_size  = 1280x960    ; initial client size in windowed mode
 scale        = sharp       ; integer | sharp | nearest-fit
 aspect       = 4:3         ; 4:3 | stretch
 vsync        = true
+park         = offscreen   ; offscreen | underneath (fallback: hidden under the presenter)
 [debug]
 log          = true        ; horned-rat.log
 game_debug   = true        ; capture the game's own OutputDebugStringA output
