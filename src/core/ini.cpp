@@ -28,7 +28,8 @@ IniDocument parse_ini(std::string_view text) {
     std::size_t start = 0;
     while (start <= text.size()) {
         const auto end = text.find('\n', start);
-        const auto raw = text.substr(start, end == std::string_view::npos ? text.npos : end - start);
+        const auto raw =
+            text.substr(start, end == std::string_view::npos ? text.npos : end - start);
         ++line_number;
         const auto line = trim(strip_comment(raw));
         if (!line.empty()) {

@@ -41,8 +41,8 @@ TEST_CASE("values are case-insensitive", "[config]") {
 }
 
 TEST_CASE("invalid values keep the default and warn", "[config]") {
-    const auto r =
-        load_config("[display]\nscale = blurry\nwindow_size = 100x50\n[general]\nenabled = maybe\n");
+    const auto r = load_config(
+        "[display]\nscale = blurry\nwindow_size = 100x50\n[general]\nenabled = maybe\n");
     CHECK(r.config == Config{});
     REQUIRE(r.warnings.size() == 3);
     CHECK_THAT(r.warnings[0], ContainsSubstring("display.scale") && ContainsSubstring("blurry"));

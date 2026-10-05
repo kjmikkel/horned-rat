@@ -72,24 +72,25 @@ constexpr Field kFields[] = {
      [](Config& c, std::string_view v) { return assign(c.enabled, parse_bool(v)); }},
     {"display.mode",
      [](Config& c, std::string_view v) {
-         return assign(c.mode, parse_choice<DisplayMode>(v, {{"windowed", DisplayMode::Windowed},
-                                                             {"borderless", DisplayMode::Borderless}}));
+         return assign(c.mode,
+                       parse_choice<DisplayMode>(v, {{"windowed", DisplayMode::Windowed},
+                                                     {"borderless", DisplayMode::Borderless}}));
      }},
     {"display.window_size",
      [](Config& c, std::string_view v) { return assign(c.window_size, parse_size(v)); }},
     {"display.scale",
      [](Config& c, std::string_view v) {
-         return assign(c.scale, parse_choice<ScaleMode>(v, {{"integer", ScaleMode::Integer},
-                                                            {"sharp", ScaleMode::Sharp},
-                                                            {"nearest-fit", ScaleMode::NearestFit}}));
+         return assign(c.scale,
+                       parse_choice<ScaleMode>(v, {{"integer", ScaleMode::Integer},
+                                                   {"sharp", ScaleMode::Sharp},
+                                                   {"nearest-fit", ScaleMode::NearestFit}}));
      }},
     {"display.aspect",
      [](Config& c, std::string_view v) {
          return assign(c.aspect, parse_choice<AspectMode>(v, {{"4:3", AspectMode::Keep4x3},
                                                               {"stretch", AspectMode::Stretch}}));
      }},
-    {"display.vsync",
-     [](Config& c, std::string_view v) { return assign(c.vsync, parse_bool(v)); }},
+    {"display.vsync", [](Config& c, std::string_view v) { return assign(c.vsync, parse_bool(v)); }},
     {"debug.log", [](Config& c, std::string_view v) { return assign(c.log, parse_bool(v)); }},
     {"debug.game_debug",
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
