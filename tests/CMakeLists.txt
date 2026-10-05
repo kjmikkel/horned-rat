@@ -1,1 +1,4 @@
 add_subdirectory(core)
+if(NOT HR_CORE_ONLY)
+  add_subdirectory(platform)
+endif()

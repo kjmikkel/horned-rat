@@ -1,0 +1,10 @@
+add_library(fake_wing SHARED fake_wing/fake_wing.cpp fake_wing/fake_wing.def)
+set_target_properties(fake_wing PROPERTIES OUTPUT_NAME wing32_orig)
+target_compile_definitions(fake_wing PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(fake_wing PRIVATE hr_warnings)
+
+add_executable(platform_tests pe_test.cpp)
+target_include_directories(platform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(platform_tests PRIVATE hr_platform hr_warnings Catch2::Catch2WithMain)
+add_dependencies(platform_tests fake_wing)
+catch_discover_tests(platform_tests ADD_TAGS_AS_LABELS)
