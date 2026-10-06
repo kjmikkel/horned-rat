@@ -66,3 +66,19 @@ The log item applies from A1 on. Later milestones add items here (window resizin
 - [ ] Over the black bars the game's cursor stays (`scaled`: drawn at the picture's edge;
       `native`: shown where the mouse is); over the title bar, other windows and the desktop the
       normal Windows cursor is shown.
+
+### A2 background (from A2.4)
+- [ ] The game has one taskbar entry, and Alt+Tab shows no second, smaller copy of the picture.
+- [ ] `background = run`: alt-tab away in a battle; the game keeps playing (music, units move) and
+      the picture is right on return.
+- [ ] `background = pause`: alt-tab away in a battle, the books menu and a briefing video. While
+      away the game is frozen and silent (effects, music, video sound); on return it carries on
+      where it stopped, without jumping ahead, and video and sound stay in sync.
+- [ ] `background = pause`: stay away for 20 s or more; no small copy of the window appears at the
+      top left of a monitor.
+- [ ] Either mode: the game's own exit question (quitting through the curtain) stays in front and
+      can be answered, also after clicking another window and back.
+- [ ] Second monitor (if available): the presenter on the second monitor, the focus on the first;
+      the game behaves as its `background` mode says.
+- [ ] `horned-rat.log`: no `access violation` lines from `WING32.dll` itself; the 10 s lines show
+      `slowest` below ~35 ms in normal play.
