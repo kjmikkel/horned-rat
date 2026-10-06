@@ -93,3 +93,15 @@ TEST_CASE("a buffer is forgotten when its last reference is released", "[sound_p
     pause.resume(sound);
     CHECK(sound.played.empty());
 }
+
+TEST_CASE("pausing reports how many buffers it stopped out of how many it knows", "[sound_pause]") {
+    FakeSound sound;
+    sound.state = {{1, {true, true}}, {2, {false, false}}, {3, {true, false}}};
+    SoundPause pause;
+    for (std::uintptr_t id : {1u, 2u, 3u}) {
+        pause.add(id);
+    }
+    const auto counts = pause.pause(sound);
+    CHECK(counts.stopped == 2);
+    CHECK(counts.known == 3);
+}

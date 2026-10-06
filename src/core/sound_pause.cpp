@@ -24,13 +24,17 @@ unsigned long SoundPause::release(std::uintptr_t buffer,
     return references;
 }
 
-void SoundPause::pause(Control& control) {
+SoundPause::Counts SoundPause::pause(Control& control) {
     const std::lock_guard lock(mutex_);
+    Counts counts;
     for (const std::uintptr_t buffer : live_) {
+        ++counts.known;
         if (const auto looping = control.stop_if_playing(buffer)) {
             stopped_[buffer] = *looping;
+            ++counts.stopped;
         }
     }
+    return counts;
 }
 
 void SoundPause::resume(Control& control) {

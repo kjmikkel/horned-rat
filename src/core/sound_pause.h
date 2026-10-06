@@ -28,8 +28,12 @@ class SoundPause {
     // Runs `do_release` (the buffer's own Release) under the lock and forgets the buffer when it
     // returns 0, so a pause can never touch a buffer that is being freed. Returns its result.
     unsigned long release(std::uintptr_t buffer, const std::function<unsigned long()>& do_release);
+    struct Counts {
+        int stopped = 0;
+        int known = 0;
+    };
     // Stops every playing buffer and remembers it; resume plays exactly those again.
-    void pause(Control& control);
+    Counts pause(Control& control);
     void resume(Control& control);
 
   private:

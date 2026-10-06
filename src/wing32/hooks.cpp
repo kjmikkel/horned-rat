@@ -987,7 +987,9 @@ void log_wing_bit_blt(const void* caller, HDC dest, int x, int y, int width, int
 void pause_game_sounds(bool paused) {
     DirectSoundControl control;
     if (paused) {
-        g_sound_pause.pause(control);
+        const auto counts = g_sound_pause.pause(control);
+        platform::log("presenter: stopped " + std::to_string(counts.stopped) + " of " +
+                      std::to_string(counts.known) + " known sound buffers");
     } else {
         g_sound_pause.resume(control);
     }
