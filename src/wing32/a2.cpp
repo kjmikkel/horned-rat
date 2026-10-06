@@ -19,6 +19,7 @@
 #include "platform/presenter_window.h"
 #include "platform/window_capture.h"
 #include "platform/window_subclass.h"
+#include "wing32/hooks.h"
 #include "wing32/runtime.h"
 
 #include <atomic>
@@ -59,6 +60,7 @@ std::mutex g_clock_mutex;
 core::PauseClock g_tick_clock;
 core::PauseClock g_mm_clock;
 std::atomic<bool> g_ever_held{false};
+std::atomic<int> g_dialogs{0}; // open game message boxes
 std::atomic<HCURSOR> g_cursor{nullptr};
 std::atomic<std::uint32_t> g_cursor_sets{0}; // SetCursor calls by the game so far
 std::atomic<int> g_cursor_x{0};
@@ -174,10 +176,10 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
     }
     if (g_active && msg == WM_ACTIVATE && GetForegroundWindow() == window) {
         // The invisible window is the foreground window (e.g. picked in alt-tab before it became
-        // a tool window): hand the foreground to the presenter. Not while a game dialog is open:
-        // the dialog disables the presenter, its owner, and must keep the focus.
+        // a tool window): hand the foreground to the presenter. Not while a game message box is
+        // open: Windows activates Glue on the way to the box, which must keep the focus (A2.4).
         const HWND presenter = g_presenter;
-        if (presenter != nullptr && IsWindowEnabled(presenter)) {
+        if (presenter != nullptr && g_dialogs == 0) {
             platform::log("presenter: the hidden game window was activated, taking the focus back");
             SetForegroundWindow(presenter);
         }
@@ -554,6 +556,8 @@ void defer_display_mode(const DEVMODEA* mode, DWORD flags) {
     g_display_deferred = true;
 }
 
+void note_dialog(bool open) { g_dialogs += open ? 1 : -1; }
+
 HWND presenter_window() { return g_active ? g_presenter.load() : nullptr; }
 
 void fake_cursor_pos(POINT& out) {
@@ -595,8 +599,10 @@ void hold_while_paused() {
         g_mm_clock.hold(timeGetTime());
         g_ever_held = true;
     }
+    pause_game_sounds(true); // the held game cannot stop its own looping sounds
     platform::log("presenter: game held");
     platform::wait_handling_sent_messages(g_wake, &holding);
+    pause_game_sounds(false);
     {
         const std::lock_guard lock(g_clock_mutex);
         g_tick_clock.release(GetTickCount());

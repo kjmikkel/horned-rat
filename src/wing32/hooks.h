@@ -12,4 +12,8 @@ void install_hooks();
 void log_wing_bit_blt(const void* caller, HDC dest, int x, int y, int width, int height);
 void log_wing_stretch_blt(const void* caller, HDC dest, int x, int y, int width, int height);
 
+// background = pause: stops the game's playing sound buffers while it is held, and plays them
+// again afterwards (core::SoundPause).
+void pause_game_sounds(bool paused);
+
 } // namespace hr::wing32

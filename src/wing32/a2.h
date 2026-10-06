@@ -26,6 +26,10 @@ void set_game_cursor(HCURSOR cursor);
 // The presenter window while active (owner for the game's message boxes), else nullptr.
 HWND presenter_window();
 
+// MessageBoxA: a game message box opens (true) or closes (false). While one is open the presenter
+// leaves the focus alone: the box must keep it.
+void note_dialog(bool open);
+
 // True from the game's main window creation until the presenter gives up: the presenter owns
 // the display, so the game's display-mode changes are deferred (core::defer_display_change).
 bool owns_display();

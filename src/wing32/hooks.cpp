@@ -7,6 +7,7 @@
 #include "core/game_modules.h"
 #include "core/input_map.h"
 #include "core/sample_limiter.h"
+#include "core/sound_pause.h"
 #include "platform/dc_info.h"
 #include "platform/guard.h"
 #include "platform/iat_hook.h"
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -182,6 +184,31 @@ std::atomic<SetCooperativeLevel_t> g_set_cooperative_level{nullptr};
 std::atomic<CreateSoundBuffer_t> g_create_sound_buffer{nullptr};
 std::atomic<std::uint64_t> g_sound_buffers{0};
 
+// The game's secondary buffers, for background = pause (core::SoundPause). IDirectSound slot 5
+// is DuplicateSoundBuffer; IDirectSoundBuffer slot 2 is Release (one vtable for all buffers).
+using DuplicateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPDIRECTSOUNDBUFFER,
+                                                           LPDIRECTSOUNDBUFFER*);
+using BufferRelease_t = ULONG(STDMETHODCALLTYPE*)(IDirectSoundBuffer*);
+std::atomic<DuplicateSoundBuffer_t> g_duplicate_sound_buffer{nullptr};
+std::atomic<BufferRelease_t> g_buffer_release{nullptr};
+core::SoundPause g_sound_pause;
+
+class DirectSoundControl final : public core::SoundPause::Control {
+  public:
+    std::optional<bool> stop_if_playing(std::uintptr_t id) override {
+        auto* const buffer = reinterpret_cast<IDirectSoundBuffer*>(id);
+        DWORD status = 0;
+        if (FAILED(buffer->GetStatus(&status)) || (status & DSBSTATUS_PLAYING) == 0) {
+            return std::nullopt;
+        }
+        buffer->Stop();
+        return (status & DSBSTATUS_LOOPING) != 0;
+    }
+    void play(std::uintptr_t id, bool looping) override {
+        reinterpret_cast<IDirectSoundBuffer*>(id)->Play(0, 0, looping ? DSBPLAY_LOOPING : 0);
+    }
+};
+
 std::string window_class(HWND window) {
     char name[64] = {};
     if (window != nullptr) {
@@ -199,6 +226,29 @@ HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND wind
         },
         [] {});
     return g_set_cooperative_level.load()(self, window, level);
+}
+
+void patch_vtable_slot(void** vtable, int index, void* replacement) {
+    DWORD old = 0;
+    if (VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old)) {
+        vtable[index] = replacement;
+        VirtualProtect(&vtable[index], sizeof(void*), old, &old);
+    }
+}
+
+ULONG STDMETHODCALLTYPE hook_BufferRelease(IDirectSoundBuffer* self) {
+    // Released under SoundPause's lock: a pause never stops a buffer that is being freed.
+    return g_sound_pause.release(reinterpret_cast<std::uintptr_t>(self),
+                                 [&] { return g_buffer_release.load()(self); });
+}
+
+void track_sound_buffer(IDirectSoundBuffer* buffer) {
+    auto** const vtable = *reinterpret_cast<void***>(buffer);
+    if (vtable[2] != reinterpret_cast<void*>(&hook_BufferRelease)) {
+        g_buffer_release = reinterpret_cast<BufferRelease_t>(vtable[2]);
+        patch_vtable_slot(vtable, 2, reinterpret_cast<void*>(&hook_BufferRelease));
+    }
+    g_sound_pause.add(reinterpret_cast<std::uintptr_t>(buffer));
 }
 
 HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFERDESC desc,
@@ -223,15 +273,22 @@ HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFER
     }
     DSBUFFERDESC copy = *desc;
     copy.dwFlags = core::with_global_focus(copy.dwFlags);
-    return g_create_sound_buffer.load()(self, &copy, buffer, outer);
+    const HRESULT result = g_create_sound_buffer.load()(self, &copy, buffer, outer);
+    if (SUCCEEDED(result) && buffer != nullptr && *buffer != nullptr &&
+        (desc->dwFlags & DSBCAPS_PRIMARYBUFFER) == 0) {
+        platform::guarded("CreateSoundBuffer track", [&] { track_sound_buffer(*buffer); }, [] {});
+    }
+    return result;
 }
 
-void patch_vtable_slot(void** vtable, int index, void* replacement) {
-    DWORD old = 0;
-    if (VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old)) {
-        vtable[index] = replacement;
-        VirtualProtect(&vtable[index], sizeof(void*), old, &old);
+HRESULT STDMETHODCALLTYPE hook_DuplicateSoundBuffer(IDirectSound* self, LPDIRECTSOUNDBUFFER source,
+                                                    LPDIRECTSOUNDBUFFER* duplicate) {
+    const HRESULT result = g_duplicate_sound_buffer.load()(self, source, duplicate);
+    if (SUCCEEDED(result) && duplicate != nullptr && *duplicate != nullptr) {
+        platform::guarded(
+            "DuplicateSoundBuffer track", [&] { track_sound_buffer(*duplicate); }, [] {});
     }
+    return result;
 }
 
 HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKNOWN outer) {
@@ -246,7 +303,13 @@ HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKN
                           platform::module_file_name_from_address(caller) + " -> " + text);
             if (SUCCEEDED(result) && sound != nullptr && *sound != nullptr) {
                 auto** const vtable = *reinterpret_cast<void***>(*sound);
-                // IDirectSound: 3 = CreateSoundBuffer, 6 = SetCooperativeLevel.
+                // IDirectSound: 3 = CreateSoundBuffer, 5 = DuplicateSoundBuffer,
+                // 6 = SetCooperativeLevel.
+                if (vtable[5] != reinterpret_cast<void*>(&hook_DuplicateSoundBuffer)) {
+                    g_duplicate_sound_buffer = reinterpret_cast<DuplicateSoundBuffer_t>(vtable[5]);
+                    patch_vtable_slot(vtable, 5,
+                                      reinterpret_cast<void*>(&hook_DuplicateSoundBuffer));
+                }
                 if (vtable[3] != reinterpret_cast<void*>(&hook_CreateSoundBuffer)) {
                     g_create_sound_buffer = reinterpret_cast<CreateSoundBuffer_t>(vtable[3]);
                     patch_vtable_slot(vtable, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
@@ -273,8 +336,12 @@ int WINAPI hook_MessageBoxA(HWND owner, LPCSTR text, LPCSTR caption, UINT type) 
                           (presenter != nullptr ? " -> presenter" : ""));
         },
         [] {});
-    // Owned by the presenter, the box appears on top of it and disables it while open (A2.1).
-    return originals().MessageBoxA(presenter != nullptr ? presenter : owner, text, caption, type);
+    // Owned by the presenter, the box appears on top of it (A2.1).
+    a2::note_dialog(true);
+    const int result =
+        originals().MessageBoxA(presenter != nullptr ? presenter : owner, text, caption, type);
+    a2::note_dialog(false);
+    return result;
 }
 
 void WINAPI hook_ExitProcess(UINT code) {
@@ -915,6 +982,15 @@ void install_hooks() {
 
 void log_wing_bit_blt(const void* caller, HDC dest, int x, int y, int width, int height) {
     log_wing_blit("WinGBitBlt", g_counters.wing_bit_blt, caller, dest, x, y, width, height);
+}
+
+void pause_game_sounds(bool paused) {
+    DirectSoundControl control;
+    if (paused) {
+        g_sound_pause.pause(control);
+    } else {
+        g_sound_pause.resume(control);
+    }
 }
 
 void log_wing_stretch_blt(const void* caller, HDC dest, int x, int y, int width, int height) {
