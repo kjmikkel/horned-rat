@@ -6,6 +6,7 @@
 #include "core/display_mode.h"
 #include "core/game_modules.h"
 #include "core/input_map.h"
+#include "core/playback_pause.h"
 #include "core/sample_limiter.h"
 #include "core/sound_pause.h"
 #include "platform/dc_info.h"
@@ -22,6 +23,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -346,6 +348,138 @@ HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKN
         },
         [] {});
     return result;
+}
+
+// ---- MIDI (background = pause) ----
+
+// The game's music plays in Windows' own threads, so a held game cannot pause it: the menus use
+// MCI sequencer devices (MIDI.dll, WHSHR.exe), the videos MIDI streams (OMNI000R.DLL). The hooks
+// record them; pause_game_sounds pauses and resumes them through wing32's own (unhooked) imports.
+core::PlaybackPause g_mci_pause;
+core::PlaybackPause g_stream_pause;
+
+// How the game last started each MCI device, so a resume plays on with the game's own end
+// notification (its tune repeats depend on it).
+struct MciPlay {
+    DWORD_PTR callback = 0;
+    bool notify = false;
+};
+std::mutex g_mci_mutex;
+std::map<MCIDEVICEID, MciPlay> g_mci_plays;
+
+class MciControl final : public core::PlaybackPause::Control {
+  public:
+    bool pause_if_playing(std::uintptr_t id) override {
+        const auto device = static_cast<MCIDEVICEID>(id);
+        MCI_STATUS_PARMS status{};
+        status.dwItem = MCI_STATUS_MODE;
+        return mciSendCommandA(device, MCI_STATUS, MCI_STATUS_ITEM,
+                               reinterpret_cast<DWORD_PTR>(&status)) == 0 &&
+               status.dwReturn == MCI_MODE_PLAY && mciSendCommandA(device, MCI_PAUSE, 0, 0) == 0;
+    }
+    void resume(std::uintptr_t id) override {
+        const auto device = static_cast<MCIDEVICEID>(id);
+        MciPlay play;
+        {
+            const std::lock_guard lock(g_mci_mutex);
+            play = g_mci_plays[device];
+        }
+        MCI_PLAY_PARMS params{};
+        params.dwCallback = play.callback;
+        mciSendCommandA(device, MCI_PLAY, play.notify ? MCI_NOTIFY : 0,
+                        reinterpret_cast<DWORD_PTR>(&params));
+    }
+};
+
+class StreamControl final : public core::PlaybackPause::Control {
+  public:
+    bool pause_if_playing(std::uintptr_t id) override {
+        return midiStreamPause(reinterpret_cast<HMIDISTRM>(id)) == MMSYSERR_NOERROR;
+    }
+    void resume(std::uintptr_t id) override { midiStreamRestart(reinterpret_cast<HMIDISTRM>(id)); }
+};
+
+const char* mci_command_name(UINT msg) {
+    switch (msg) {
+    case MCI_OPEN:
+        return "MCI_OPEN";
+    case MCI_CLOSE:
+        return "MCI_CLOSE";
+    case MCI_PLAY:
+        return "MCI_PLAY";
+    case MCI_STOP:
+        return "MCI_STOP";
+    case MCI_PAUSE:
+        return "MCI_PAUSE";
+    case MCI_SEEK:
+        return "MCI_SEEK";
+    default:
+        return nullptr;
+    }
+}
+
+MCIERROR WINAPI hook_mciSendCommandA(MCIDEVICEID device, UINT msg, DWORD_PTR flags,
+                                     DWORD_PTR param) {
+    const MCIERROR result = mciSendCommandA(device, msg, flags, param); // wing32's own import
+    platform::guarded(
+        "mciSendCommandA",
+        [&] {
+            if (const char* name = mci_command_name(msg)) {
+                platform::log(std::string("diag: mciSendCommandA(") + std::to_string(device) +
+                              ", " + name + ") -> " + std::to_string(result));
+            }
+            if (result != 0) {
+                return;
+            }
+            if (msg == MCI_OPEN && param != 0) {
+                g_mci_pause.opened(reinterpret_cast<const MCI_OPEN_PARMSA*>(param)->wDeviceID);
+            } else if (msg == MCI_CLOSE) {
+                g_mci_pause.closed(device);
+            } else if (msg == MCI_PLAY) {
+                const std::lock_guard lock(g_mci_mutex);
+                MciPlay& play = g_mci_plays[device];
+                play.notify = (flags & MCI_NOTIFY) != 0;
+                play.callback =
+                    param != 0 ? reinterpret_cast<const MCI_GENERIC_PARMS*>(param)->dwCallback : 0;
+            } else if (msg == MCI_STOP) {
+                g_mci_pause.set_running(device, false);
+            }
+        },
+        [] {});
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamOpen(LPHMIDISTRM stream, LPUINT device, DWORD count,
+                                    DWORD_PTR callback, DWORD_PTR instance, DWORD flags) {
+    const MMRESULT result = midiStreamOpen(stream, device, count, callback, instance, flags);
+    if (result == MMSYSERR_NOERROR && stream != nullptr) {
+        // A stream opens paused; it runs once the game restarts it.
+        g_stream_pause.opened(reinterpret_cast<std::uintptr_t>(*stream), false);
+    }
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamClose(HMIDISTRM stream) {
+    g_stream_pause.closed(reinterpret_cast<std::uintptr_t>(stream));
+    return midiStreamClose(stream);
+}
+
+MMRESULT WINAPI hook_midiStreamRestart(HMIDISTRM stream) {
+    const MMRESULT result = midiStreamRestart(stream);
+    if (result == MMSYSERR_NOERROR) {
+        g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), true);
+    }
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamStop(HMIDISTRM stream) {
+    g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), false);
+    return midiStreamStop(stream);
+}
+
+MMRESULT WINAPI hook_midiStreamPause(HMIDISTRM stream) {
+    g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), false);
+    return midiStreamPause(stream);
 }
 
 // ---- Dialogs and exit ----
@@ -956,6 +1090,12 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "GetMessageA", reinterpret_cast<void*>(&hook_GetMessageA)},
     {"KERNEL32.dll", "GetTickCount", reinterpret_cast<void*>(&hook_GetTickCount)},
     {"WINMM.dll", "timeGetTime", reinterpret_cast<void*>(&hook_timeGetTime)},
+    {"WINMM.dll", "mciSendCommandA", reinterpret_cast<void*>(&hook_mciSendCommandA)},
+    {"WINMM.dll", "midiStreamOpen", reinterpret_cast<void*>(&hook_midiStreamOpen)},
+    {"WINMM.dll", "midiStreamClose", reinterpret_cast<void*>(&hook_midiStreamClose)},
+    {"WINMM.dll", "midiStreamRestart", reinterpret_cast<void*>(&hook_midiStreamRestart)},
+    {"WINMM.dll", "midiStreamStop", reinterpret_cast<void*>(&hook_midiStreamStop)},
+    {"WINMM.dll", "midiStreamPause", reinterpret_cast<void*>(&hook_midiStreamPause)},
     {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
     {"USER32.dll", "LoadCursorA", reinterpret_cast<void*>(&hook_LoadCursorA)},
     {"USER32.dll", "SetClassLongA", reinterpret_cast<void*>(&hook_SetClassLongA)},
@@ -1011,10 +1151,20 @@ void pause_game_sounds(bool paused) {
     DirectSoundControl control;
     if (paused) {
         const auto counts = g_sound_pause.pause(control);
+        MciControl mci;
+        StreamControl streams;
+        const int devices = g_mci_pause.pause(mci);
+        const int midi = g_stream_pause.pause(streams);
         platform::log("presenter: stopped " + std::to_string(counts.stopped) + " of " +
-                      std::to_string(counts.known) + " known sound buffers");
+                      std::to_string(counts.known) + " known sound buffers, paused " +
+                      std::to_string(devices) + " MCI devices and " + std::to_string(midi) +
+                      " MIDI streams");
     } else {
         g_sound_pause.resume(control);
+        MciControl mci;
+        StreamControl streams;
+        g_mci_pause.resume(mci);
+        g_stream_pause.resume(streams);
     }
 }
 

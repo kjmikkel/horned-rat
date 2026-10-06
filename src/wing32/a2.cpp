@@ -108,6 +108,8 @@ const char* watched_name(UINT msg) {
         return "WM_SIZE";
     case WM_SHOWWINDOW:
         return "WM_SHOWWINDOW";
+    case MM_MCINOTIFY: // wparam 1 successful, 2 superseded, 4 aborted, 8 failure
+        return "MM_MCINOTIFY";
     default:
         return nullptr;
     }
