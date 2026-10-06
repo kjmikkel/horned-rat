@@ -142,6 +142,19 @@ synchronisation with the game's drawing).
   recorded cursor (bitmap from `GetIconInfo`, converted to a texture, cached per handle) at g,
   scaled by the same integer factor as the picture, hotspot-corrected.
 - `cursor = native`: on `WM_SETCURSOR` in the client area the presenter sets the recorded handle.
+- **`WM_SETCURSOR` forwarding (A2.3).** The game sets most cursors as window-class cursors, which
+  Windows applies in `DefWindowProc(WM_SETCURSOR)`. It also drives hover tooltips and similar
+  effects from that message. Windows sends it only to the window under the real cursor, which is
+  never a game window.
+  - Before each forwarded mouse message except the wheel, the presenter sends
+    `WM_SETCURSOR(child, MAKELPARAM(HTCLIENT, msg))` to the deepest game child under g with
+    `SendMessageCallbackA`. The send is asynchronous, so the presenter never blocks on the game
+    thread.
+  - Nothing is sent while a game window has mouse capture.
+  - When the game has handled it, the presenter records the cursor the game wants: the one it
+    set with `SetCursor` meanwhile (a call counter in the hook changed), else the hit window's
+    class cursor (`GetClassLongPtrA(GCLP_HCURSOR)`, invisible to the IAT hook because
+    `DefWindowProc` sets it internally), else unchanged (`core::cursor_after_set_cursor`).
 
 ### 5.4 Window state
 
@@ -179,6 +192,32 @@ synchronisation with the game's drawing).
 - The game's display-mode changes are deferred while the presenter owns the display and replayed
   if it gives up (`core::defer_display_change`).
 
+### 5.7 Decisions made in A2.3
+
+- **Evidence first.** The books-menu issue was investigated before any fix, with diagnostics that
+  stay in the code:
+  - `LoadCursorA`, `SetClassLongA` and `RegisterClassA/ExA` are logged, and `SetCursor` changes
+    too;
+  - an opt-in message census (`[debug] message_census`) logs per window class which messages the
+    game thread's windows receive (`WH_CALLWNDPROC` + `WH_GETMESSAGE`).
+- `PresenterInput::cursor()` is the cursor shown over the client area; `nullptr` means none.
+  `PresenterWindow::refresh_cursor()` applies a change at once instead of waiting for the next
+  mouse move.
+- **Scaled sprite:**
+  - It is enlarged by the picture's whole factor per axis, at least 1 (`core::cursor_scale`).
+  - Its hotspot sits on the top-left corner of game pixel g (`core::cursor_rect`).
+  - It is drawn only while the real cursor is over the client area.
+  - A cursor that cannot be converted is shown natively.
+- **Cursor pixels** (`core::cursor_pixels`):
+  - Monochrome "invert screen" pixels are drawn opaque white.
+  - A colour cursor without alpha takes its alpha from the AND mask; under a set AND bit, black
+    is transparent and other colours are opaque.
+- The sprite cache is never evicted: the game has few cursors, and `LoadCursorA` handles live as
+  long as the process.
+- **Keyboard:** while the presenter runs, a `TranslateMessage` hook leaves the game's key-downs
+  untranslated (`core::skip_translate`). The presenter already forwards the characters it made
+  from the real keyboard state; translating again doubled every typed character.
+
 ## 6. Configuration
 
 New `horned-rat.ini` keys (existing keys from Stage A §6.1 unchanged; invalid values warn and use
@@ -189,6 +228,8 @@ the default):
 background = run        ; run | pause
 [display]
 cursor     = scaled     ; scaled | native
+[debug]
+message_census = false  ; diagnostics: log the messages the game's windows receive (A2.3)
 ```
 
 There is no parking option: hiding on-screen is the only mode (§3).
@@ -265,3 +306,13 @@ Alt+Enter work at ~60 fps up to 1920×1080. Two bugs found and fixed: the game's
 switch and the missing `WM_QUIT` when closed with ✕/Alt+F4. Known issue moved to A2.3: in the
 books menu the game's cursor and item hover subtitles do not appear (hypothesis: class cursors
 and `WM_SETCURSOR`, which only reaches the window under the real cursor).
+
+A2.3 exit results (`a2-3-exit.md`):
+- **Hypothesis confirmed with a message census.** No game window ever received `WM_SETCURSOR`
+  under the presenter. The game's classes carry sword/hand class cursors, and the game resets its
+  wait cursor through that message. Forwarding it (§5.3) restored the cursor shapes, the hover
+  tooltips, the man's remark in the books menu, and the end of the stuck wait cursor.
+- **Both cursor modes pass the smoke test**, at an unchanged ~60 fps.
+- **Typing doubled every character;** fixed with the `TranslateMessage` hook (§5.7).
+- **Open:** æ/ø/å cannot be typed (accepted); a brief small cursor flash at exit;
+  `aspect = stretch` and DPI above 100 % are still untested.

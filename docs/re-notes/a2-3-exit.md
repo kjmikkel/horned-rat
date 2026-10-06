@@ -45,3 +45,42 @@
   - No `exception` lines.
   - Performance is unchanged: 601 frames / 10 s, capture ~5.5 ms, present ~11 ms.
 - **Conclusion:** forwarding `WM_SETCURSOR` fixes the cursor, the stuck wait icon, the hover tooltips and the man's remark. The game drives all of them from that message.
+
+## 2. Smoke test
+
+- **Builds:** `debe339` (scaled cursor), then `812620a` (typing fix).
+- **Setup:** hardware D3D11, 1280×960 window, `scale = sharp`.
+
+| Item | Result |
+|---|---|
+| `cursor = scaled`: game cursor drawn enlarged (2×), clicks on its hotspot | Pass |
+| `cursor = native`: game cursor at normal size by Windows | Pass |
+| Books menu: game cursor, hand over the books, hover tooltips, the man's remark | Pass (both modes) |
+| Loading cursor appears and goes away | Pass |
+| Battle: cursor changes over units and terrain | Pass |
+| Over the bars / title bar / desktop | Pass: the game's cursor over the bars, the Windows arrow over the title bar and desktop |
+| Typing a save-game name | **Fail, fixed (§4):** every character was doubled. After the fix: pass, including Shift and Backspace |
+| æ, ø, å in a save name | Not typed (accepted; see §5) |
+| Briefing videos | Pass |
+| Dragging the presenter partly off-screen | Pass |
+| Clicking the desktop over the hidden game window | Pass |
+| Maximize → Alt+Enter → Alt+Enter back to maximized | Pass |
+| `aspect = stretch` | Not tested |
+
+## 3. Performance
+
+With a cursor sprite drawn: 601–602 frames per 10 s, capture 1.5–2.4 ms, present 13.8–14.8 ms. This is unchanged from A2.2; the sprite pass costs nothing measurable.
+
+## 4. Bugs found and fixed
+
+1. **Cursor, hover tooltips, the man's remark, stuck wait cursor** (the A2.2 known issue): `WM_SETCURSOR` never reached the game (§1). Fix: the presenter forwards it asynchronously to the game child under the virtual cursor before each forwarded mouse message. It then takes the game's `SetCursor` choice or the hit window's class cursor.
+2. **Every typed character doubled** (carried A2.1 item, first tested here).
+   - Cause: the presenter forwards `WM_CHAR` made from the real keyboard state, and the game's own `TranslateMessage` (imported by `WHSHR.EXE`) turned the forwarded `WM_KEYDOWN` into a second `WM_CHAR`. The census showed exactly 2 `WM_CHAR` per `WM_KEYDOWN` on the `Edit` control.
+   - Fix: a `TranslateMessage` hook skips key-down translation while the presenter runs (`core::skip_translate`).
+   - After the fix the census shows at most one `WM_CHAR` per key press.
+
+## 5. Open items and observations
+
+- When the game closes, the small Windows-drawn cursor shows for a split second. Not worth fixing (user).
+- æ, ø, å cannot be typed in a save name. Accepted by the user; probably the game's own text handling, not checked against vanilla.
+- `aspect = stretch` and display scaling above 100 % are still untested.
