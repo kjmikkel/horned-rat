@@ -147,6 +147,7 @@ class Input final : public platform::PresenterInput {
         }
     }
     void on_close() override { PostMessageA(g_glue, WM_CLOSE, 0, 0); }
+    void on_tick() override {}
     HCURSOR cursor() override { return g_cursor; }
 
   private:

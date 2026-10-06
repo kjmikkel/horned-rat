@@ -1,11 +1,18 @@
 #include "platform/presenter_window.h"
 
+#include "core/scaling.h"
+#include "core/viewport.h"
+
 #include <windowsx.h>
+
+#include <algorithm>
 
 namespace hr::platform {
 namespace {
 constexpr char kClassName[] = "HornedRatPresenter";
-constexpr DWORD kStyle = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
+constexpr UINT_PTR kTickTimer = 1;
+constexpr UINT kTickMs = 15;
 } // namespace
 
 PresenterWindow::PresenterWindow(PresenterInput& input, core::Size client, const char* title)
@@ -19,11 +26,41 @@ PresenterWindow::PresenterWindow(PresenterInput& input, core::Size client, const
         return RegisterClassA(&wc) != 0;
     }();
     (void)registered;
-    RECT frame{0, 0, client.width, client.height};
-    AdjustWindowRect(&frame, kStyle, FALSE);
-    hwnd_ = CreateWindowExA(0, kClassName, title, kStyle, CW_USEDEFAULT, CW_USEDEFAULT,
-                            frame.right - frame.left, frame.bottom - frame.top, nullptr, nullptr,
+    hwnd_ = CreateWindowExA(0, kClassName, title, kWindowedStyle, CW_USEDEFAULT, CW_USEDEFAULT,
+                            kMinClient.width, kMinClient.height, nullptr, nullptr,
                             GetModuleHandleA(nullptr), this);
+    if (hwnd_ != nullptr) {
+        place(client);
+    }
+}
+
+// Sizes the window for `client` (fitted to the work area, at least kMinClient) and centres it.
+// The frame is measured on the real window, so this is right at any DPI.
+void PresenterWindow::place(core::Size client) {
+    RECT outer{};
+    RECT inner{};
+    GetWindowRect(hwnd_, &outer);
+    GetClientRect(hwnd_, &inner);
+    const core::Size frame{(outer.right - outer.left) - inner.right,
+                           (outer.bottom - outer.top) - inner.bottom};
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof monitor;
+    GetMonitorInfoA(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    const RECT& work = monitor.rcWork;
+    const core::Size area{work.right - work.left, work.bottom - work.top};
+    core::Size fitted =
+        core::fit_inside(client, {area.width - frame.width, area.height - frame.height});
+    fitted = {std::max(fitted.width, kMinClient.width), std::max(fitted.height, kMinClient.height)};
+    const core::Size size{fitted.width + frame.width, fitted.height + frame.height};
+    const core::Rect placed = core::centered_rect(area, size);
+    SetWindowPos(hwnd_, nullptr, work.left + placed.x, work.top + placed.y, size.width, size.height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+core::Size PresenterWindow::client_size() const {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    return {client.right, client.bottom};
 }
 
 PresenterWindow::~PresenterWindow() {
@@ -91,6 +128,25 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         break;
     case WM_ERASEBKGND:
         return 1;
+    case WM_GETMINMAXINFO: {
+        RECT min{0, 0, kMinClient.width, kMinClient.height};
+        AdjustWindowRect(&min, static_cast<DWORD>(GetWindowLongPtrA(window, GWL_STYLE)), FALSE);
+        auto* const info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize = POINT{min.right - min.left, min.bottom - min.top};
+        return 0;
+    }
+    case WM_ENTERSIZEMOVE:
+        SetTimer(window, kTickTimer, kTickMs, nullptr);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer(window, kTickTimer);
+        return 0;
+    case WM_TIMER:
+        if (wparam == kTickTimer) {
+            self->input_.on_tick();
+            return 0;
+        }
+        break;
     default:
         break;
     }
