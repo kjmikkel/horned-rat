@@ -9,6 +9,7 @@
 #include "platform/iat_hook.h"
 #include "platform/log.h"
 #include "platform/modules.h"
+#include "wing32/a2.h"
 #include "wing32/runtime.h"
 
 #include <intrin.h>
@@ -93,6 +94,8 @@ struct Originals {
     decltype(&::GetDC) GetDC;
     decltype(&::GetWindowDC) GetWindowDC;
     decltype(&::BeginPaint) BeginPaint;
+    decltype(&::GetAsyncKeyState) GetAsyncKeyState;
+    decltype(&::SetCursor) SetCursor;
 };
 
 const Originals& originals() {
@@ -123,6 +126,8 @@ const Originals& originals() {
         get(user32, "GetDC", r.GetDC);
         get(user32, "GetWindowDC", r.GetWindowDC);
         get(user32, "BeginPaint", r.BeginPaint);
+        get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
+        get(user32, "SetCursor", r.SetCursor);
         return r;
     }();
     return o;
@@ -297,6 +302,9 @@ HWND WINAPI hook_CreateWindowExA(DWORD ex_style, LPCSTR class_name, LPCSTR windo
                           platform::module_file_name_from_address(caller) + ": class '" + cls +
                           "' title '" + (window_name ? window_name : "") + "' " + styles + " " +
                           rect(x, y, w, h) + " parent=" + hex(parent) + " -> " + hex(result));
+            if (result != nullptr) {
+                a2::on_window_created(result, parent, style);
+            }
         },
         [] {});
     SetLastError(error);
@@ -321,17 +329,37 @@ BOOL WINAPI hook_SetWindowPos(HWND window, HWND after, int x, int y, int w, int 
 
 BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     const void* caller = _ReturnAddress();
-    const BOOL result = originals().GetCursorPos(point);
+    BOOL result = TRUE;
+    if (point != nullptr && a2::active()) {
+        platform::guarded(
+            "GetCursorPos", [&] { a2::fake_cursor_pos(*point); },
+            [&] { result = originals().GetCursorPos(point); });
+    } else {
+        result = originals().GetCursorPos(point);
+    }
     platform::guarded(
-        "GetCursorPos",
+        "GetCursorPos log",
         [&] {
             if (const auto n = sample(g_counters.get_cursor_pos); n && point) {
                 trace("GetCursorPos", n, caller,
-                      "-> (" + std::to_string(point->x) + "," + std::to_string(point->y) + ")");
+                      "-> (" + std::to_string(point->x) + "," + std::to_string(point->y) + ")" +
+                          (a2::active() ? " virtual" : ""));
             }
         },
         [] {});
     return result;
+}
+
+SHORT WINAPI hook_GetAsyncKeyState(int vk) {
+    const SHORT state = originals().GetAsyncKeyState(vk);
+    return platform::guarded(
+        "GetAsyncKeyState", [&]() -> SHORT { return a2::mask_button(vk) ? SHORT{0} : state; },
+        [&] { return state; });
+}
+
+HCURSOR WINAPI hook_SetCursor(HCURSOR cursor) {
+    platform::guarded("SetCursor", [&] { a2::set_game_cursor(cursor); }, [] {});
+    return originals().SetCursor(cursor);
 }
 
 BOOL WINAPI hook_SetCursorPos(int x, int y) {
@@ -471,6 +499,8 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "GetDC", reinterpret_cast<void*>(&hook_GetDC)},
     {"USER32.dll", "GetWindowDC", reinterpret_cast<void*>(&hook_GetWindowDC)},
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
+    {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
+    {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
 };
 
 void log_wing_blit(const char* function, DcCounters& counters, const void* caller, HDC dest, int x,
