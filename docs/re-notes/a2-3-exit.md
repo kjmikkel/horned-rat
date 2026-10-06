@@ -31,3 +31,17 @@
   - The game shows its cursors through window-class cursors, which Windows applies in `DefWindowProc(WM_SETCURSOR)`. It also resets after its wait cursor through the same message.
   - Under the presenter the message never reaches the game, because Windows sends it only to the window under the real cursor.
   - The hover tooltips and the man's remark also stop. They are most likely triggered from `WM_SETCURSOR` handling too, since the mouse moves do arrive. Run B will show whether forwarding the message brings them back.
+
+### Run B
+
+- **Run:** 2026-10-06, build `d80600e` (`WM_SETCURSOR` forwarding), `message_census = true`.
+- **What the user saw:** everything works, also after completing the first mission:
+  - the cursor changes over the books;
+  - item tooltips and the man's remark are back;
+  - the loading icon goes away after loading.
+- **Log:**
+  - `WM_SETCURSOR` now reaches every game window class. Some counts: `Glue` 5225, `BitmapScrn` 5225, `GlueWindow` 1108, `Button` 123, and the battle classes (`WarHammerClass` 4136, `Map2DClass` 1413, `CPClass` 1786, …).
+  - The presenter's cursor changes come from class cursors: the sword from `GlueWindow`, `BitmapScrn`, `TroopWindow` and the movie classes; the hand from `Button` and `EditScroll`.
+  - No `exception` lines.
+  - Performance is unchanged: 601 frames / 10 s, capture ~5.5 ms, present ~11 ms.
+- **Conclusion:** forwarding `WM_SETCURSOR` fixes the cursor, the stuck wait icon, the hover tooltips and the man's remark. The game drives all of them from that message.
