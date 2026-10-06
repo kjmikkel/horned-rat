@@ -10,7 +10,11 @@ HiddenState hide_window(HWND window, RECT area) {
     state.ex_style = GetWindowLongPtrA(window, GWL_EXSTYLE);
     state.hidden = true;
 
-    SetWindowLongPtrA(window, GWL_EXSTYLE, state.ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT);
+    // A tool window has no taskbar button and no alt-tab entry, so the user cannot switch to the
+    // invisible window (A2.4 run B).
+    SetWindowLongPtrA(window, GWL_EXSTYLE,
+                      (state.ex_style & ~WS_EX_APPWINDOW) | WS_EX_LAYERED | WS_EX_TRANSPARENT |
+                          WS_EX_TOOLWINDOW);
     SetLayeredWindowAttributes(window, 0, 0, LWA_ALPHA);
     const RECT& r = state.window_rect;
     const core::Point pos =

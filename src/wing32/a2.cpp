@@ -151,7 +151,18 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
         PostQuitMessage(0);
         return result;
     }
-    return CallWindowProcA(original, window, msg, wparam, lparam);
+    const LRESULT result = CallWindowProcA(original, window, msg, wparam, lparam);
+    if (g_active && msg == WM_ACTIVATE && GetForegroundWindow() == window) {
+        // The invisible window is the foreground window (e.g. picked in alt-tab before it became
+        // a tool window): hand the foreground to the presenter. Not while a game dialog is open:
+        // the dialog disables the presenter, its owner, and must keep the focus.
+        const HWND presenter = g_presenter;
+        if (presenter != nullptr && IsWindowEnabled(presenter)) {
+            platform::log("presenter: the hidden game window was activated, taking the focus back");
+            SetForegroundWindow(presenter);
+        }
+    }
+    return result;
 }
 
 // Runs on the presenter thread once the game thread has handled a forwarded WM_SETCURSOR

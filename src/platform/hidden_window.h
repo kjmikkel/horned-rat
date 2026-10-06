@@ -11,7 +11,8 @@ struct HiddenState {
     bool hidden = false;
 };
 
-// Makes `window` invisible (layered, alpha 0) and click-through, puts it at the bottom of the
+// Makes `window` invisible (layered, alpha 0), click-through and absent from the taskbar and
+// alt-tab (a tool window), puts it at the bottom of the
 // z-order and moves it (if needed) fully inside `area` (screen coordinates). It must stay
 // on-screen: GDI clips drawing to the on-screen part of a window (A2 spec §2 correction).
 HiddenState hide_window(HWND window, RECT area);

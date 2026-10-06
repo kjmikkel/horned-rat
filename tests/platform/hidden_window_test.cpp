@@ -47,6 +47,23 @@ TEST_CASE("hide_window makes a window invisible, click-through and fully on-scre
     DestroyWindow(window);
 }
 
+TEST_CASE("a hidden window is kept out of the taskbar and alt-tab, and unhide restores that",
+          "[hidden_window]") {
+    const HWND window = hr::test::make_window(100, 100, 200, 150);
+    SetWindowLongPtrA(window, GWL_EXSTYLE,
+                      GetWindowLongPtrA(window, GWL_EXSTYLE) | WS_EX_APPWINDOW);
+    const HiddenState state = hide_window(window, work_area());
+    LONG_PTR ex = GetWindowLongPtrA(window, GWL_EXSTYLE);
+    CHECK((ex & WS_EX_TOOLWINDOW) != 0);
+    CHECK((ex & WS_EX_APPWINDOW) == 0);
+
+    unhide_window(window, state);
+    ex = GetWindowLongPtrA(window, GWL_EXSTYLE);
+    CHECK((ex & WS_EX_TOOLWINDOW) == 0);
+    CHECK((ex & WS_EX_APPWINDOW) != 0);
+    DestroyWindow(window);
+}
+
 TEST_CASE("a hidden window under another window still delivers live drawing to the capture",
           "[hidden_window]") {
     const HWND window = hr::test::make_window(100, 100, 200, 150);
