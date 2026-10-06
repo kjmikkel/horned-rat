@@ -23,7 +23,8 @@ struct FakeInput final : hr::platform::PresenterInput {
     void on_close() override { closed = true; }
     int ticks = 0;
     void on_tick() override { ++ticks; }
-    HCURSOR cursor() override { return nullptr; }
+    HCURSOR shown = nullptr;
+    HCURSOR cursor() override { return shown; }
 };
 
 } // namespace
@@ -206,4 +207,60 @@ TEST_CASE("the presenter window is per-monitor DPI aware even from a DPI-unaware
     CHECK(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) ==
           DPI_AWARENESS_UNAWARE);
     CHECK(window.client_size() == hr::core::Size{640, 480});
+}
+
+namespace {
+HCURSOR system_cursor(int id) { return LoadCursorA(nullptr, MAKEINTRESOURCEA(id)); }
+constexpr int kArrow = 32512; // IDC_ARROW
+constexpr int kCross = 32515; // IDC_CROSS
+} // namespace
+
+TEST_CASE("over the client area the window shows the input's cursor; nullptr shows none",
+          "[presenter_window]") {
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {640, 480}, "test");
+    const auto ask = [&] {
+        SendMessageA(window.hwnd(), WM_SETCURSOR, reinterpret_cast<WPARAM>(window.hwnd()),
+                     MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    };
+    input.shown = system_cursor(kCross);
+    ask();
+    CHECK(GetCursor() == system_cursor(kCross));
+    input.shown = nullptr;
+    ask();
+    CHECK(GetCursor() == nullptr);
+    SetCursor(system_cursor(kArrow));
+}
+
+TEST_CASE("cursor_in_client and refresh_cursor follow the real cursor", "[presenter_window]") {
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {320, 240}, "test");
+    window.show();
+    SetWindowPos(window.hwnd(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    POINT saved{};
+    GetCursorPos(&saved);
+    POINT inside{160, 120};
+    ClientToScreen(window.hwnd(), &inside);
+    RECT frame{};
+    GetWindowRect(window.hwnd(), &frame);
+    const POINT outside{frame.left - 10, frame.top - 10};
+
+    POINT now{};
+    if (!SetCursorPos(inside.x, inside.y) || !GetCursorPos(&now) || now.x != inside.x ||
+        now.y != inside.y) {
+        SetCursorPos(saved.x, saved.y);
+        SKIP("the real cursor cannot be moved on this desktop");
+    }
+    CHECK(hr::platform::cursor_in_client(window.hwnd()));
+    input.shown = system_cursor(kCross);
+    SetCursor(system_cursor(kArrow));
+    window.refresh_cursor();
+    CHECK(GetCursor() == system_cursor(kCross));
+
+    SetCursorPos(outside.x, outside.y);
+    CHECK_FALSE(hr::platform::cursor_in_client(window.hwnd()));
+    SetCursor(system_cursor(kArrow));
+    window.refresh_cursor();
+    CHECK(GetCursor() == system_cursor(kArrow));
+    SetCursorPos(saved.x, saved.y);
 }

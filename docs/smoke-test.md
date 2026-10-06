@@ -54,3 +54,15 @@ The log item applies from A1 on. Later milestones add items here (window resizin
 - [ ] Carried from A2.1: typing a save-game name; battle mouse control and map scrolling;
       briefing videos; clicks on the desktop do not reach the game; dragging the presenter partly
       off-screen keeps it updating; other windows stay clickable over the hidden game window.
+
+### A2 cursor (from A2.3)
+- [ ] `cursor = scaled`: the game's own cursor is drawn enlarged with the picture (2× at 1280×960),
+      and clicks land on its hotspot.
+- [ ] `cursor = native`: the game's cursor is shown at normal size by Windows.
+- [ ] Books menu: the game's cursor appears (not the OS arrow), and hovering a special item shows
+      its subtitle.
+- [ ] The loading cursor appears while the game loads and goes away afterwards.
+- [ ] Battle: the cursor changes shape over units and terrain as in vanilla.
+- [ ] Over the black bars the game's cursor stays (`scaled`: drawn at the picture's edge;
+      `native`: shown where the mouse is); over the title bar, other windows and the desktop the
+      normal Windows cursor is shown.

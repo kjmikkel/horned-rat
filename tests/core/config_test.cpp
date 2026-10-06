@@ -18,8 +18,8 @@ TEST_CASE("an empty file gives the defaults without warnings", "[config]") {
 TEST_CASE("every key is read", "[config]") {
     const auto r = load_config("[general]\nenabled = false\n"
                                "[display]\nmode = borderless\nwindow_size = 1920x1440\n"
-                               "scale = integer\naspect = stretch\nvsync = no\n"
-                               "[debug]\nlog = off\ngame_debug = 0\n");
+                               "scale = integer\naspect = stretch\nvsync = no\ncursor = native\n"
+                               "[debug]\nlog = off\ngame_debug = 0\nmessage_census = on\n");
     CHECK(r.warnings.empty());
     CHECK_FALSE(r.config.enabled);
     CHECK(r.config.mode == DisplayMode::Borderless);
@@ -29,6 +29,15 @@ TEST_CASE("every key is read", "[config]") {
     CHECK_FALSE(r.config.vsync);
     CHECK_FALSE(r.config.log);
     CHECK_FALSE(r.config.game_debug);
+    CHECK(r.config.message_census);
+    CHECK(r.config.cursor == CursorMode::Native);
+}
+
+TEST_CASE("an invalid cursor mode warns and keeps scaled", "[config]") {
+    const auto r = load_config("[display]\ncursor = huge\n");
+    CHECK(r.config.cursor == CursorMode::Scaled);
+    REQUIRE(r.warnings.size() == 1);
+    CHECK_THAT(r.warnings[0], ContainsSubstring("display.cursor") && ContainsSubstring("huge"));
 }
 
 TEST_CASE("values are case-insensitive", "[config]") {

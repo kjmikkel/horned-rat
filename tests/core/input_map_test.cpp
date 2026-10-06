@@ -64,3 +64,15 @@ TEST_CASE("only a fresh Alt+Enter press toggles borderless", "[input_map]") {
     CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyDown, 'A', alt));
     CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyDown, kVkReturn, 0));
 }
+
+TEST_CASE("the game does not translate forwarded key presses while the presenter runs",
+          "[input_map]") {
+    // The presenter already forwards the WM_CHAR/WM_SYSCHAR it made from the real keyboard
+    // state; a second translation in the game doubled every typed character (A2.3 smoke test).
+    CHECK(skip_translate(true, kWmKeyDown));
+    CHECK(skip_translate(true, kWmSysKeyDown));
+    CHECK_FALSE(skip_translate(true, kWmKeyUp));
+    CHECK_FALSE(skip_translate(true, kWmMouseMove));
+    CHECK_FALSE(skip_translate(false, kWmKeyDown));
+    CHECK_FALSE(skip_translate(false, kWmSysKeyDown));
+}

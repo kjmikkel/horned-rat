@@ -168,8 +168,7 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         return 0;
     case WM_SETCURSOR:
         if (LOWORD(lparam) == HTCLIENT) {
-            const HCURSOR cursor = self->input_.cursor();
-            SetCursor(cursor != nullptr ? cursor : LoadCursorA(nullptr, MAKEINTRESOURCEA(32512)));
+            SetCursor(self->input_.cursor());
             return TRUE;
         }
         break;
@@ -198,6 +197,23 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         break;
     }
     return DefWindowProcA(window, msg, wparam, lparam);
+}
+
+void PresenterWindow::refresh_cursor() {
+    if (cursor_in_client(hwnd_)) {
+        SetCursor(input_.cursor());
+    }
+}
+
+bool cursor_in_client(HWND window) {
+    POINT cursor{};
+    if (window == nullptr || !GetCursorPos(&cursor) || WindowFromPoint(cursor) != window) {
+        return false;
+    }
+    ScreenToClient(window, &cursor);
+    RECT client{};
+    GetClientRect(window, &client);
+    return PtInRect(&client, cursor) != FALSE;
 }
 
 } // namespace hr::platform

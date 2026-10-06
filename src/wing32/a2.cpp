@@ -1,13 +1,16 @@
 #include "wing32/a2.h"
 
 #include "core/content_rect.h"
+#include "core/cursor_math.h"
 #include "core/input_map.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
+#include "platform/cursor_image.h"
 #include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
 #include "platform/log.h"
+#include "platform/message_spy.h"
 #include "platform/presenter_d3d11.h"
 #include "platform/presenter_window.h"
 #include "platform/window_capture.h"
@@ -16,13 +19,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace hr::wing32::a2 {
 namespace {
@@ -35,6 +41,7 @@ std::atomic<bool> g_started{false};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_stop{false};
 std::atomic<HCURSOR> g_cursor{nullptr};
+std::atomic<std::uint32_t> g_cursor_sets{0}; // SetCursor calls by the game so far
 std::atomic<int> g_cursor_x{0};
 std::atomic<int> g_cursor_y{0};
 std::atomic<int> g_content_x{0};
@@ -137,6 +144,23 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
     return CallWindowProcA(original, window, msg, wparam, lparam);
 }
 
+// Runs on the presenter thread once the game thread has handled a forwarded WM_SETCURSOR
+// (platform::send_set_cursor; `sets_before` = g_cursor_sets when it was sent).
+void CALLBACK on_set_cursor_done(HWND window, UINT, ULONG_PTR sets_before, LRESULT) {
+    const bool game_set = g_cursor_sets.load() != static_cast<std::uint32_t>(sets_before);
+    const auto class_cursor = static_cast<std::uintptr_t>(GetClassLongPtrA(window, GCLP_HCURSOR));
+    const auto chosen = core::cursor_after_set_cursor(
+        game_set, reinterpret_cast<std::uintptr_t>(g_cursor.load()), class_cursor);
+    const auto next = reinterpret_cast<HCURSOR>(chosen);
+    if (g_cursor.exchange(next) != next) {
+        char line[160];
+        std::snprintf(line, sizeof line, "diag: cursor 0x%p (%s '%s')", static_cast<void*>(next),
+                      game_set ? "set by the game in" : "class cursor of",
+                      class_of(window).c_str());
+        platform::log(line);
+    }
+}
+
 class Input final : public platform::PresenterInput {
   public:
     void set_dest(core::Rect dest) { dest_ = dest; }
@@ -150,7 +174,12 @@ class Input final : public platform::PresenterInput {
         g_cursor_x = g.x;
         g_cursor_y = g.y;
         if (g_active && core::classify(msg, wparam) == core::Forward::Mouse) {
-            platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
+            const POINT root{content.x + g.x, content.y + g.y};
+            if (msg != WM_MOUSEWHEEL) {
+                platform::send_set_cursor(g_glue, root, msg, &on_set_cursor_done,
+                                          g_cursor_sets.load());
+            }
+            platform::post_mouse(g_glue, msg, wparam, root);
         }
     }
     void on_key(UINT msg, WPARAM wparam, LPARAM lparam) override {
@@ -166,11 +195,14 @@ class Input final : public platform::PresenterInput {
             tick_();
         }
     }
-    HCURSOR cursor() override { return g_cursor; }
+    HCURSOR cursor() override { return shown_; }
+    HCURSOR shown_cursor() const { return shown_; }
+    void set_shown_cursor(HCURSOR cursor) { shown_ = cursor; }
 
   private:
     core::Rect dest_{0, 0, 640, 480};
     std::function<void()> tick_;
+    HCURSOR shown_ = LoadCursorA(nullptr, IDC_ARROW);
 };
 
 void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
@@ -263,6 +295,35 @@ void presenter_body() {
 
         // One frame: follow the window size, capture, scale, present. Runs from the loop below
         // and from on_tick while the user drags the window frame.
+        const HCURSOR arrow = LoadCursorA(nullptr, IDC_ARROW);
+        platform::log(std::string("presenter: cursor ") +
+                      (config.cursor == core::CursorMode::Scaled ? "scaled" : "native"));
+
+        // Cursor sprites by handle (spec §5.3); nullopt = could not be converted, shown natively.
+        struct CursorSprite {
+            core::Size size;
+            core::Point hotspot;
+        };
+        std::map<HCURSOR, std::optional<CursorSprite>> sprites;
+        const auto sprite_for = [&](HCURSOR cursor) -> const std::optional<CursorSprite>& {
+            auto it = sprites.find(cursor);
+            if (it == sprites.end()) {
+                std::optional<CursorSprite> entry;
+                const auto image = platform::cursor_image(cursor);
+                if (image && d3d->add_sprite(reinterpret_cast<std::uintptr_t>(cursor),
+                                             image->pixels.data(), image->size)) {
+                    entry = CursorSprite{image->size, image->hotspot};
+                }
+                char line[128];
+                std::snprintf(line, sizeof line, "presenter: cursor 0x%p %s",
+                              static_cast<void*>(cursor),
+                              entry ? "drawn as a sprite" : "cannot be drawn, shown natively");
+                platform::log(line);
+                it = sprites.emplace(cursor, entry).first;
+            }
+            return it->second;
+        };
+
         const auto frame = [&] {
             if (!failure.empty()) {
                 return;
@@ -277,6 +338,20 @@ void presenter_body() {
             const core::Rect dest = core::dest_rect(client, {content.width, content.height},
                                                     config.scale, config.aspect);
             input.set_dest(dest);
+            const HCURSOR game_cursor = g_cursor;
+            const CursorSprite* sprite = nullptr;
+            if (config.cursor == core::CursorMode::Scaled && game_cursor != nullptr) {
+                if (const auto& entry = sprite_for(game_cursor)) {
+                    sprite = &*entry;
+                }
+            }
+            // While a sprite is drawn the system cursor is hidden over the client area.
+            const HCURSOR shown =
+                sprite != nullptr ? nullptr : (game_cursor != nullptr ? game_cursor : arrow);
+            if (shown != input.shown_cursor()) {
+                input.set_shown_cursor(shown);
+                window.refresh_cursor();
+            }
             if (dest != last_dest) {
                 char line[160];
                 std::snprintf(line, sizeof line,
@@ -296,6 +371,12 @@ void presenter_body() {
             }
             const auto t1 = Clock::now();
             d3d->render(capture.pixels(), capture.size(), dest, filter);
+            if (sprite != nullptr && platform::cursor_in_client(window.hwnd())) {
+                d3d->draw_sprite(reinterpret_cast<std::uintptr_t>(game_cursor),
+                                 core::cursor_rect({g_cursor_x.load(), g_cursor_y.load()},
+                                                   {content.width, content.height}, dest,
+                                                   sprite->size, sprite->hotspot));
+            }
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
@@ -364,6 +445,18 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
     GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
     g_hidden_state = platform::hide_window(window, monitor.rcWork);
     platform::log("presenter: starting for the main window (hidden at creation)");
+    if (settings().config.message_census) {
+        // On the game thread, so the spy sees that thread's windows. Never destroyed: the game's
+        // windows live until the process ends.
+        static platform::MessageSpy spy(std::chrono::seconds(5),
+                                        [](const std::vector<std::string>& lines) {
+                                            for (const auto& line : lines) {
+                                                platform::log("diag: census " + line);
+                                            }
+                                        });
+        platform::log(std::string("diag: message census ") +
+                      (spy.installed() ? "on" : "could not be installed"));
+    }
     std::thread(presenter_main).detach();
 }
 
@@ -399,20 +492,14 @@ bool mask_button(int vk) {
     if (!g_active || presenter == nullptr || !core::is_mouse_button(vk)) {
         return false;
     }
-    POINT cursor{};
-    GetCursorPos(&cursor); // our own import: the real position
-    bool in_client = WindowFromPoint(cursor) == presenter;
-    if (in_client) {
-        POINT client = cursor;
-        ScreenToClient(presenter, &client);
-        RECT r{};
-        GetClientRect(presenter, &r);
-        in_client = PtInRect(&r, client) != FALSE;
-    }
+    const bool in_client = platform::cursor_in_client(presenter);
     return !core::report_button(GetForegroundWindow() == presenter, in_client);
 }
 
-void set_game_cursor(HCURSOR cursor) { g_cursor = cursor; }
+void set_game_cursor(HCURSOR cursor) {
+    g_cursor = cursor;
+    ++g_cursor_sets;
+}
 
 void note_button(int vk, bool physically_down, bool masked) {
     static std::atomic<int> last[8]{};

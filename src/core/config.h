@@ -11,6 +11,7 @@ namespace hr::core {
 enum class DisplayMode { Windowed, Borderless };
 enum class ScaleMode { Integer, Sharp, NearestFit };
 enum class AspectMode { Keep4x3, Stretch };
+enum class CursorMode { Scaled, Native };
 
 // Mirrors horned-rat.ini (spec §6.1).
 struct Config {
@@ -20,8 +21,10 @@ struct Config {
     ScaleMode scale = ScaleMode::Sharp;
     AspectMode aspect = AspectMode::Keep4x3;
     bool vsync = true;
+    CursorMode cursor = CursorMode::Scaled;
     bool log = true;
     bool game_debug = true;
+    bool message_census = false; // diagnostics: log the messages the game's windows receive
 
     friend bool operator==(const Config&, const Config&) = default;
 };

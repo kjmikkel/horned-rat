@@ -19,7 +19,8 @@ void fake_cursor_pos(POINT& out);
 // GetAsyncKeyState while active: true if a mouse button must be reported as "up".
 bool mask_button(int vk);
 
-// SetCursor: the game's current cursor, shown by the presenter.
+// SetCursor: records the game's cursor and counts the call (a forwarded WM_SETCURSOR uses the
+// count to tell whether the game chose a cursor itself).
 void set_game_cursor(HCURSOR cursor);
 
 // The presenter window while active (owner for the game's message boxes), else nullptr.

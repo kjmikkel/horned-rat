@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -49,7 +50,7 @@ struct DcCounters {
 struct Counters {
     std::atomic<std::uint64_t> set_window_pos{0}, get_cursor_pos{0}, set_cursor_pos{0},
         clip_cursor{0}, screen_to_client{0}, client_to_screen{0}, get_dc{0}, get_window_dc{0},
-        begin_paint{0};
+        begin_paint{0}, set_cursor{0};
     DcCounters stretch_dibits, text_out, pat_blt, bit_blt, set_dibits_to_device, wing_bit_blt,
         wing_stretch_blt;
 };
@@ -107,7 +108,12 @@ struct Originals {
     decltype(&::GetWindowDC) GetWindowDC;
     decltype(&::BeginPaint) BeginPaint;
     decltype(&::GetAsyncKeyState) GetAsyncKeyState;
+    decltype(&::TranslateMessage) TranslateMessage;
     decltype(&::SetCursor) SetCursor;
+    decltype(&::LoadCursorA) LoadCursorA;
+    decltype(&::SetClassLongA) SetClassLongA;
+    decltype(&::RegisterClassA) RegisterClassA;
+    decltype(&::RegisterClassExA) RegisterClassExA;
     decltype(&::MessageBoxA) MessageBoxA;
     decltype(&::ExitProcess) ExitProcess;
     HRESULT(WINAPI* DirectSoundCreate)(LPCGUID, LPDIRECTSOUND*, LPUNKNOWN);
@@ -143,7 +149,12 @@ const Originals& originals() {
         get(user32, "GetWindowDC", r.GetWindowDC);
         get(user32, "BeginPaint", r.BeginPaint);
         get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
+        get(user32, "TranslateMessage", r.TranslateMessage);
         get(user32, "SetCursor", r.SetCursor);
+        get(user32, "LoadCursorA", r.LoadCursorA);
+        get(user32, "SetClassLongA", r.SetClassLongA);
+        get(user32, "RegisterClassA", r.RegisterClassA);
+        get(user32, "RegisterClassExA", r.RegisterClassExA);
         get(user32, "MessageBoxA", r.MessageBoxA);
         get(kernel32, "ExitProcess", r.ExitProcess);
         if (const HMODULE dsound = GetModuleHandleW(L"dsound.dll")) {
@@ -520,6 +531,14 @@ BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     return result;
 }
 
+BOOL WINAPI hook_TranslateMessage(const MSG* msg) {
+    const bool skip = platform::guarded(
+        "TranslateMessage",
+        [&] { return msg != nullptr && core::skip_translate(a2::active(), msg->message); },
+        [] { return false; });
+    return skip ? FALSE : originals().TranslateMessage(msg);
+}
+
 SHORT WINAPI hook_GetAsyncKeyState(int vk) {
     const SHORT state = originals().GetAsyncKeyState(vk);
     return platform::guarded(
@@ -535,8 +554,117 @@ SHORT WINAPI hook_GetAsyncKeyState(int vk) {
 }
 
 HCURSOR WINAPI hook_SetCursor(HCURSOR cursor) {
-    platform::guarded("SetCursor", [&] { a2::set_game_cursor(cursor); }, [] {});
+    const void* caller = _ReturnAddress();
+    platform::guarded(
+        "SetCursor",
+        [&] {
+            a2::set_game_cursor(cursor);
+            static std::atomic<HCURSOR> last{nullptr};
+            if (last.exchange(cursor) != cursor) {
+                if (const auto n = sample(g_counters.set_cursor)) {
+                    trace("SetCursor", n, caller, "cursor=" + hex(cursor));
+                }
+            }
+        },
+        [] {});
     return originals().SetCursor(cursor);
+}
+
+// ---- Cursor sources (diagnostics for the A2.3 investigation) ----
+
+std::string resource_name(LPCSTR name) {
+    if (IS_INTRESOURCE(name)) {
+        return "#" + std::to_string(reinterpret_cast<std::uintptr_t>(name));
+    }
+    return std::string("\"") + name + "\"";
+}
+
+std::string instance_name(HINSTANCE instance) {
+    if (instance == nullptr) {
+        return "system";
+    }
+    const std::string path = platform::module_path(instance);
+    const auto slash = path.find_last_of("\\/");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+HCURSOR WINAPI hook_LoadCursorA(HINSTANCE instance, LPCSTR name) {
+    const void* caller = _ReturnAddress();
+    const HCURSOR result = originals().LoadCursorA(instance, name);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "LoadCursorA",
+        [&] {
+            // Once per handle: some games load their cursor on every WM_SETCURSOR.
+            static std::mutex mutex;
+            static std::set<HCURSOR> seen;
+            const std::lock_guard lock(mutex);
+            if (seen.insert(result).second) {
+                platform::log("diag: LoadCursorA(" + instance_name(instance) + ", " +
+                              resource_name(name) + ") from " +
+                              platform::module_file_name_from_address(caller) + " -> " +
+                              hex(result));
+            }
+        },
+        [] {});
+    SetLastError(error);
+    return result;
+}
+
+DWORD WINAPI hook_SetClassLongA(HWND window, int index, LONG value) {
+    const void* caller = _ReturnAddress();
+    const DWORD result = originals().SetClassLongA(window, index, value);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "SetClassLongA",
+        [&] {
+            platform::log("diag: SetClassLongA(class '" + window_class(window) + "', " +
+                          std::to_string(index) + (index == GCL_HCURSOR ? " GCL_HCURSOR" : "") +
+                          ", " +
+                          hex(reinterpret_cast<const void*>(
+                              static_cast<std::uintptr_t>(static_cast<DWORD>(value)))) +
+                          ") from " + platform::module_file_name_from_address(caller));
+        },
+        [] {});
+    SetLastError(error);
+    return result;
+}
+
+void log_class(const char* function, LPCSTR name, HCURSOR cursor, const void* caller) {
+    platform::log(std::string("diag: ") + function + "(" + resource_name(name) + ", cursor " +
+                  hex(cursor) + ") from " + platform::module_file_name_from_address(caller));
+}
+
+ATOM WINAPI hook_RegisterClassA(const WNDCLASSA* wc) {
+    const void* caller = _ReturnAddress();
+    const ATOM result = originals().RegisterClassA(wc);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "RegisterClassA",
+        [&] {
+            if (wc != nullptr) {
+                log_class("RegisterClassA", wc->lpszClassName, wc->hCursor, caller);
+            }
+        },
+        [] {});
+    SetLastError(error);
+    return result;
+}
+
+ATOM WINAPI hook_RegisterClassExA(const WNDCLASSEXA* wc) {
+    const void* caller = _ReturnAddress();
+    const ATOM result = originals().RegisterClassExA(wc);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "RegisterClassExA",
+        [&] {
+            if (wc != nullptr) {
+                log_class("RegisterClassExA", wc->lpszClassName, wc->hCursor, caller);
+            }
+        },
+        [] {});
+    SetLastError(error);
+    return result;
 }
 
 BOOL WINAPI hook_SetCursorPos(int x, int y) {
@@ -677,7 +805,12 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "GetWindowDC", reinterpret_cast<void*>(&hook_GetWindowDC)},
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
     {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
+    {"USER32.dll", "TranslateMessage", reinterpret_cast<void*>(&hook_TranslateMessage)},
     {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
+    {"USER32.dll", "LoadCursorA", reinterpret_cast<void*>(&hook_LoadCursorA)},
+    {"USER32.dll", "SetClassLongA", reinterpret_cast<void*>(&hook_SetClassLongA)},
+    {"USER32.dll", "RegisterClassA", reinterpret_cast<void*>(&hook_RegisterClassA)},
+    {"USER32.dll", "RegisterClassExA", reinterpret_cast<void*>(&hook_RegisterClassExA)},
     {"DSOUND.dll", "DirectSoundCreate", reinterpret_cast<void*>(&hook_DirectSoundCreate)},
     {"USER32.dll", "MessageBoxA", reinterpret_cast<void*>(&hook_MessageBoxA)},
     {"KERNEL32.dll", "ExitProcess", reinterpret_cast<void*>(&hook_ExitProcess)},
