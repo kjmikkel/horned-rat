@@ -1,3 +1,4 @@
+#include "platform/dpi_context.h"
 #include "platform/presenter_window.h"
 #include "test_window.h"
 
@@ -193,4 +194,16 @@ TEST_CASE("Alt+Enter toggles borderless and is not passed on as a key", "[presen
     SendMessageA(window.hwnd(), WM_SYSKEYDOWN, VK_RETURN, alt);
     CHECK_FALSE(window.borderless());
     CHECK(input.keys == std::vector<UINT>{WM_SYSKEYDOWN}); // only the auto-repeat, which a2 drops
+}
+
+TEST_CASE("the presenter window is per-monitor DPI aware even from a DPI-unaware thread",
+          "[presenter_window]") {
+    hr::platform::ScopedDpiContext unaware(DPI_AWARENESS_CONTEXT_UNAWARE);
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {640, 480}, "test");
+    CHECK(GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(window.hwnd())) ==
+          DPI_AWARENESS_PER_MONITOR_AWARE);
+    CHECK(GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) ==
+          DPI_AWARENESS_UNAWARE);
+    CHECK(window.client_size() == hr::core::Size{640, 480});
 }

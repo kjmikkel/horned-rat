@@ -3,6 +3,7 @@
 #include "core/input_map.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
+#include "platform/dpi_context.h"
 
 #include <windowsx.h>
 
@@ -18,6 +19,10 @@ constexpr UINT kTickMs = 15;
 
 PresenterWindow::PresenterWindow(PresenterInput& input, core::Size client, const char* title)
     : input_(input) {
+    // Per-monitor awareness, so Windows never bitmap-stretches the presenter. A window keeps the
+    // awareness it was created with, and its messages run in it.
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     static const bool registered = [] {
         WNDCLASSA wc{};
         wc.style = CS_DBLCLKS;
@@ -59,6 +64,8 @@ void PresenterWindow::place(core::Size client) {
 }
 
 void PresenterWindow::set_borderless(bool on) {
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     if (on == borderless_ || hwnd_ == nullptr) {
         return;
     }
@@ -85,6 +92,8 @@ void PresenterWindow::set_borderless(bool on) {
 }
 
 core::Size PresenterWindow::client_size() const {
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     RECT client{};
     GetClientRect(hwnd_, &client);
     return {client.right, client.bottom};

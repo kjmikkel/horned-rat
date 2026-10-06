@@ -5,6 +5,7 @@
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
+#include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
 #include "platform/log.h"
 #include "platform/presenter_d3d11.h"
@@ -45,6 +46,9 @@ std::atomic<int> g_hidden_y{0};
 // Written on the game thread before the presenter thread starts (thread start orders the access).
 platform::HiddenState g_hidden_state;
 std::atomic<bool> g_gave_up{false};
+// The game's DPI context. Presenter-window messages run per-monitor aware; anything touching the
+// game's windows from them switches back to this, so the game's coordinates stay its own.
+std::atomic<DPI_AWARENESS_CONTEXT> g_game_dpi{nullptr};
 std::mutex g_display_mutex;
 std::optional<DEVMODEA> g_deferred_mode; // guarded by g_display_mutex; nullopt = registry mode
 DWORD g_deferred_flags = 0;
@@ -132,6 +136,7 @@ class Input final : public platform::PresenterInput {
     void set_tick(std::function<void()> tick) { tick_ = std::move(tick); }
 
     void on_mouse(UINT msg, WPARAM wparam, POINT client) override {
+        const platform::ScopedDpiContext game_dpi(g_game_dpi.load());
         const core::Rect content = content_rect();
         const core::Point g =
             core::to_content({client.x, client.y}, dest_, {content.width, content.height});
@@ -142,12 +147,14 @@ class Input final : public platform::PresenterInput {
         }
     }
     void on_key(UINT msg, WPARAM wparam, LPARAM lparam) override {
+        const platform::ScopedDpiContext game_dpi(g_game_dpi.load());
         if (g_active && core::classify(msg, wparam) == core::Forward::Keyboard) {
             platform::post_key(g_glue, msg, wparam, lparam);
         }
     }
     void on_close() override { PostMessageA(g_glue, WM_CLOSE, 0, 0); }
     void on_tick() override {
+        const platform::ScopedDpiContext game_dpi(g_game_dpi.load());
         if (tick_) {
             tick_();
         }
@@ -195,6 +202,7 @@ const char* scale_name(core::ScaleMode scale) {
 }
 
 void presenter_body() {
+    g_game_dpi = platform::current_dpi_context();
     const HWND glue = g_glue;
     const platform::HiddenState& hidden_state = g_hidden_state;
     try {
