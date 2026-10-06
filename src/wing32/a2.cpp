@@ -2,7 +2,9 @@
 
 #include "core/content_rect.h"
 #include "core/cursor_math.h"
+#include "core/frame_stats.h"
 #include "core/input_map.h"
+#include "core/luma.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
@@ -40,6 +42,8 @@ std::atomic<HWND> g_presenter{nullptr};
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_stop{false};
+// One of our process's windows is in the foreground (presenter thread's WM_ACTIVATEAPP).
+std::atomic<bool> g_app_active{true};
 std::atomic<HCURSOR> g_cursor{nullptr};
 std::atomic<std::uint32_t> g_cursor_sets{0}; // SetCursor calls by the game so far
 std::atomic<int> g_cursor_x{0};
@@ -70,7 +74,7 @@ std::string class_of(HWND window) {
     return name;
 }
 
-const char* activation_name(UINT msg) {
+const char* watched_name(UINT msg) {
     switch (msg) {
     case WM_ACTIVATE:
         return "WM_ACTIVATE";
@@ -82,6 +86,10 @@ const char* activation_name(UINT msg) {
         return "WM_SETFOCUS";
     case WM_KILLFOCUS:
         return "WM_KILLFOCUS";
+    case WM_SIZE:
+        return "WM_SIZE";
+    case WM_SHOWWINDOW:
+        return "WM_SHOWWINDOW";
     default:
         return nullptr;
     }
@@ -113,15 +121,17 @@ void store_content_rect(core::Rect r) {
 
 // Runs on the game thread for every message of the main window (A2 spec §5.4).
 LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC original) {
-    if (const char* name = activation_name(msg)) {
-        const WPARAM filtered = g_active ? core::filter_activation(msg, wparam) : wparam;
+    if (const char* name = watched_name(msg)) {
+        const WPARAM filtered = g_active ? core::game_activation(settings().config.background, msg,
+                                                                 wparam, g_app_active)
+                                         : wparam;
         platform::log(std::string("diag: Glue ") + name + " wparam=" + std::to_string(wparam) +
                       " -> " + std::to_string(filtered) +
                       " foreground=" + class_of(GetForegroundWindow()));
     }
     if (g_active) {
         if (msg == WM_ACTIVATE || msg == WM_ACTIVATEAPP) {
-            wparam = core::filter_activation(msg, wparam);
+            wparam = core::game_activation(settings().config.background, msg, wparam, g_app_active);
         } else if (msg == WM_WINDOWPOSCHANGING) {
             auto* const pos = reinterpret_cast<WINDOWPOS*>(lparam);
             if ((pos->flags & SWP_NOMOVE) == 0) {
@@ -196,7 +206,29 @@ class Input final : public platform::PresenterInput {
         }
     }
     HCURSOR cursor() override { return shown_; }
-    void on_app_activation(bool) override {}
+    void on_app_activation(bool active) override {
+        if (g_app_active.exchange(active) == active) {
+            return;
+        }
+        const bool pause = settings().config.background == core::Background::Pause;
+        platform::log(std::string("presenter: ") +
+                      (active ? (pause ? "focused, game resumed" : "focused")
+                              : (pause ? "lost focus, game paused" : "lost focus, game runs on")));
+        if (!pause || !g_active) {
+            return;
+        }
+        // Glue is never the foreground window, so Windows does not tell it; send what vanilla
+        // gets, in vanilla's order. Posted: the presenter never waits for the game thread. The
+        // Glue subclass gives both messages the new state (core::game_activation).
+        const HWND glue = g_glue;
+        if (active) {
+            PostMessageA(glue, WM_ACTIVATEAPP, TRUE, 0);
+            PostMessageA(glue, WM_ACTIVATE, WA_ACTIVE, 0);
+        } else {
+            PostMessageA(glue, WM_ACTIVATE, WA_INACTIVE, 0);
+            PostMessageA(glue, WM_ACTIVATEAPP, FALSE, 0);
+        }
+    }
     HCURSOR shown_cursor() const { return shown_; }
     void set_shown_cursor(HCURSOR cursor) { shown_ = cursor; }
 
@@ -290,15 +322,17 @@ void presenter_body() {
         core::Rect last_dest{-1, -1, -1, -1};
         auto last_good = Clock::now();
         auto stats_start = Clock::now();
-        double capture_ms = 0.0;
-        double present_ms = 0.0;
-        int frames = 0;
+        core::FrameStats stats;
+        const auto running_since = Clock::now();
+        core::BrightnessTrace brightness(5.0, 4.0); // diagnostics: the start-up dip
 
         // One frame: follow the window size, capture, scale, present. Runs from the loop below
         // and from on_tick while the user drags the window frame.
         const HCURSOR arrow = LoadCursorA(nullptr, IDC_ARROW);
         platform::log(std::string("presenter: cursor ") +
                       (config.cursor == core::CursorMode::Scaled ? "scaled" : "native"));
+        platform::log(std::string("presenter: background ") +
+                      (config.background == core::Background::Pause ? "pause" : "run"));
 
         // Cursor sprites by handle (spec §5.3); nullopt = could not be converted, shown natively.
         struct CursorSprite {
@@ -381,18 +415,21 @@ void presenter_body() {
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
-            capture_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-            present_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
-            ++frames;
+            const double since = std::chrono::duration<double>(t2 - running_since).count();
+            if (brightness.running(since)) {
+                const core::Size size = capture.size();
+                const double luma = core::mean_luma(capture.pixels(), size.width, size.height);
+                if (brightness.should_log(since, luma)) {
+                    char line[64];
+                    std::snprintf(line, sizeof line, "diag: brightness %.1f", luma);
+                    platform::log(line);
+                }
+            }
+            stats.add(std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                      std::chrono::duration<double, std::milli>(t2 - t1).count());
             if (t2 - stats_start >= std::chrono::seconds(10)) {
-                char line[160];
-                std::snprintf(line, sizeof line,
-                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms",
-                              frames, capture_ms / frames, present_ms / frames);
-                platform::log(line);
+                platform::log("presenter: " + stats.take_line(10));
                 stats_start = t2;
-                capture_ms = present_ms = 0.0;
-                frames = 0;
             }
         };
         input.set_tick(frame);

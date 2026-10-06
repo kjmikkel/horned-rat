@@ -99,6 +99,7 @@ struct Originals {
     decltype(&::CreateWindowExA) CreateWindowExA;
     decltype(&::ChangeDisplaySettingsA) ChangeDisplaySettingsA;
     decltype(&::SetWindowPos) SetWindowPos;
+    decltype(&::ShowWindow) ShowWindow;
     decltype(&::GetCursorPos) GetCursorPos;
     decltype(&::SetCursorPos) SetCursorPos;
     decltype(&::ClipCursor) ClipCursor;
@@ -140,6 +141,7 @@ const Originals& originals() {
         get(user32, "CreateWindowExA", r.CreateWindowExA);
         get(user32, "ChangeDisplaySettingsA", r.ChangeDisplaySettingsA);
         get(user32, "SetWindowPos", r.SetWindowPos);
+        get(user32, "ShowWindow", r.ShowWindow);
         get(user32, "GetCursorPos", r.GetCursorPos);
         get(user32, "SetCursorPos", r.SetCursorPos);
         get(user32, "ClipCursor", r.ClipCursor);
@@ -508,6 +510,26 @@ BOOL WINAPI hook_SetWindowPos(HWND window, HWND after, int x, int y, int w, int 
         call);
 }
 
+// Diagnostics (A2.4): how the game hides, minimises or restores its top-level windows, for
+// example when it loses activation. Child windows are shown constantly and are not logged.
+BOOL WINAPI hook_ShowWindow(HWND window, int command) {
+    const void* caller = _ReturnAddress();
+    const BOOL result = originals().ShowWindow(window, command);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "ShowWindow",
+        [&] {
+            if ((GetWindowLongPtrA(window, GWL_STYLE) & WS_CHILD) == 0) {
+                platform::log("diag: ShowWindow(class '" + window_class(window) + "', " +
+                              std::to_string(command) + ") -> " + std::to_string(result) +
+                              " from " + platform::module_file_name_from_address(caller));
+            }
+        },
+        [] {});
+    SetLastError(error);
+    return result;
+}
+
 BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     const void* caller = _ReturnAddress();
     BOOL result = TRUE;
@@ -796,6 +818,7 @@ const HookSpec kHooks[] = {
     {"GDI32.dll", "SetDIBitsToDevice", reinterpret_cast<void*>(&hook_SetDIBitsToDevice)},
     {"USER32.dll", "CreateWindowExA", reinterpret_cast<void*>(&hook_CreateWindowExA)},
     {"USER32.dll", "SetWindowPos", reinterpret_cast<void*>(&hook_SetWindowPos)},
+    {"USER32.dll", "ShowWindow", reinterpret_cast<void*>(&hook_ShowWindow)},
     {"USER32.dll", "GetCursorPos", reinterpret_cast<void*>(&hook_GetCursorPos)},
     {"USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&hook_SetCursorPos)},
     {"USER32.dll", "ClipCursor", reinterpret_cast<void*>(&hook_ClipCursor)},
