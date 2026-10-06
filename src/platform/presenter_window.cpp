@@ -1,15 +1,28 @@
 #include "platform/presenter_window.h"
 
+#include "core/input_map.h"
+#include "core/scaling.h"
+#include "core/viewport.h"
+#include "platform/dpi_context.h"
+
 #include <windowsx.h>
+
+#include <algorithm>
 
 namespace hr::platform {
 namespace {
 constexpr char kClassName[] = "HornedRatPresenter";
-constexpr DWORD kStyle = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
+constexpr UINT_PTR kTickTimer = 1;
+constexpr UINT kTickMs = 15;
 } // namespace
 
 PresenterWindow::PresenterWindow(PresenterInput& input, core::Size client, const char* title)
     : input_(input) {
+    // Per-monitor awareness, so Windows never bitmap-stretches the presenter. A window keeps the
+    // awareness it was created with, and its messages run in it.
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     static const bool registered = [] {
         WNDCLASSA wc{};
         wc.style = CS_DBLCLKS;
@@ -19,11 +32,71 @@ PresenterWindow::PresenterWindow(PresenterInput& input, core::Size client, const
         return RegisterClassA(&wc) != 0;
     }();
     (void)registered;
-    RECT frame{0, 0, client.width, client.height};
-    AdjustWindowRect(&frame, kStyle, FALSE);
-    hwnd_ = CreateWindowExA(0, kClassName, title, kStyle, CW_USEDEFAULT, CW_USEDEFAULT,
-                            frame.right - frame.left, frame.bottom - frame.top, nullptr, nullptr,
+    hwnd_ = CreateWindowExA(0, kClassName, title, kWindowedStyle, CW_USEDEFAULT, CW_USEDEFAULT,
+                            kMinClient.width, kMinClient.height, nullptr, nullptr,
                             GetModuleHandleA(nullptr), this);
+    if (hwnd_ != nullptr) {
+        place(client);
+    }
+}
+
+// Sizes the window for `client` (fitted to the work area, at least kMinClient) and centres it.
+// The frame is measured on the real window, so this is right at any DPI.
+void PresenterWindow::place(core::Size client) {
+    RECT outer{};
+    RECT inner{};
+    GetWindowRect(hwnd_, &outer);
+    GetClientRect(hwnd_, &inner);
+    const core::Size frame{(outer.right - outer.left) - inner.right,
+                           (outer.bottom - outer.top) - inner.bottom};
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof monitor;
+    GetMonitorInfoA(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    const RECT& work = monitor.rcWork;
+    const core::Size area{work.right - work.left, work.bottom - work.top};
+    core::Size fitted =
+        core::fit_inside(client, {area.width - frame.width, area.height - frame.height});
+    fitted = {std::max(fitted.width, kMinClient.width), std::max(fitted.height, kMinClient.height)};
+    const core::Size size{fitted.width + frame.width, fitted.height + frame.height};
+    const core::Rect placed = core::centered_rect(area, size);
+    SetWindowPos(hwnd_, nullptr, work.left + placed.x, work.top + placed.y, size.width, size.height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void PresenterWindow::set_borderless(bool on) {
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    if (on == borderless_ || hwnd_ == nullptr) {
+        return;
+    }
+    const LONG_PTR style = GetWindowLongPtrA(hwnd_, GWL_STYLE);
+    if (on) {
+        windowed_.length = sizeof windowed_;
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof monitor;
+        if (!GetWindowPlacement(hwnd_, &windowed_) ||
+            !GetMonitorInfoA(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor)) {
+            return;
+        }
+        SetWindowLongPtrA(hwnd_, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+        const RECT& r = monitor.rcMonitor;
+        SetWindowPos(hwnd_, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else {
+        SetWindowLongPtrA(hwnd_, GWL_STYLE, (style & ~WS_POPUP) | kWindowedStyle);
+        SetWindowPlacement(hwnd_, &windowed_);
+        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    borderless_ = on;
+}
+
+core::Size PresenterWindow::client_size() const {
+    const ScopedDpiContext dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                               DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    return {client.right, client.bottom};
 }
 
 PresenterWindow::~PresenterWindow() {
@@ -75,10 +148,21 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         self->input_.on_key(msg, wparam, lparam);
         return 0;
     case WM_SYSKEYDOWN:
-    case WM_SYSKEYUP:
-    case WM_SYSCHAR:
+        if (core::toggles_borderless(msg, wparam, lparam)) {
+            self->set_borderless(!self->borderless_);
+            return 0;
+        }
         self->input_.on_key(msg, wparam, lparam);
         break; // DefWindowProc keeps Alt+F4 and the system menu working
+    case WM_SYSCHAR:
+        if (wparam == '\r') {
+            return 0; // Alt+Enter: no beep
+        }
+        self->input_.on_key(msg, wparam, lparam);
+        break;
+    case WM_SYSKEYUP:
+        self->input_.on_key(msg, wparam, lparam);
+        break;
     case WM_CLOSE:
         self->input_.on_close();
         return 0;
@@ -91,6 +175,25 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         break;
     case WM_ERASEBKGND:
         return 1;
+    case WM_GETMINMAXINFO: {
+        RECT min{0, 0, kMinClient.width, kMinClient.height};
+        AdjustWindowRect(&min, static_cast<DWORD>(GetWindowLongPtrA(window, GWL_STYLE)), FALSE);
+        auto* const info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize = POINT{min.right - min.left, min.bottom - min.top};
+        return 0;
+    }
+    case WM_ENTERSIZEMOVE:
+        SetTimer(window, kTickTimer, kTickMs, nullptr);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer(window, kTickTimer);
+        return 0;
+    case WM_TIMER:
+        if (wparam == kTickTimer) {
+            self->input_.on_tick();
+            return 0;
+        }
+        break;
     default:
         break;
     }

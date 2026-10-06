@@ -3,6 +3,7 @@
 #include "wing32/hooks.h"
 
 #include "core/audio.h"
+#include "core/display_mode.h"
 #include "core/game_modules.h"
 #include "core/input_map.h"
 #include "core/sample_limiter.h"
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #include <mmsystem.h>
@@ -94,6 +96,7 @@ struct Originals {
     decltype(&::BitBlt) BitBlt;
     decltype(&::SetDIBitsToDevice) SetDIBitsToDevice;
     decltype(&::CreateWindowExA) CreateWindowExA;
+    decltype(&::ChangeDisplaySettingsA) ChangeDisplaySettingsA;
     decltype(&::SetWindowPos) SetWindowPos;
     decltype(&::GetCursorPos) GetCursorPos;
     decltype(&::SetCursorPos) SetCursorPos;
@@ -129,6 +132,7 @@ const Originals& originals() {
         get(gdi32, "BitBlt", r.BitBlt);
         get(gdi32, "SetDIBitsToDevice", r.SetDIBitsToDevice);
         get(user32, "CreateWindowExA", r.CreateWindowExA);
+        get(user32, "ChangeDisplaySettingsA", r.ChangeDisplaySettingsA);
         get(user32, "SetWindowPos", r.SetWindowPos);
         get(user32, "GetCursorPos", r.GetCursorPos);
         get(user32, "SetCursorPos", r.SetCursorPos);
@@ -292,9 +296,49 @@ HMODULE WINAPI hook_LoadLibraryA(LPCSTR name) {
     return result;
 }
 
+static_assert(hr::core::kCdsTest == CDS_TEST);
+static_assert(hr::core::kCdsFullscreen == CDS_FULLSCREEN);
+
+// The game looks ChangeDisplaySettingsA up at runtime (GetProcAddress), so the IAT hooks miss it.
+// Its 640x480 switch is deferred while the presenter owns the display (core::defer_display_change).
+LONG WINAPI hook_ChangeDisplaySettingsA(DEVMODEA* mode, DWORD flags) {
+    const bool defer = core::defer_display_change(a2::owns_display(), flags);
+    LONG result = DISP_CHANGE_SUCCESSFUL;
+    if (defer) {
+        a2::defer_display_mode(mode, flags);
+    } else {
+        result = originals().ChangeDisplaySettingsA(mode, flags);
+    }
+    platform::guarded(
+        "ChangeDisplaySettingsA",
+        [&] {
+            char line[200];
+            if (mode == nullptr) {
+                std::snprintf(
+                    line, sizeof line,
+                    "display: ChangeDisplaySettingsA(restore registry mode, flags 0x%lx) -> %ld%s",
+                    static_cast<unsigned long>(flags), result, defer ? " (deferred)" : "");
+            } else {
+                std::snprintf(line, sizeof line,
+                              "display: ChangeDisplaySettingsA(%lux%lu %lu bpp, fields 0x%lx, "
+                              "flags 0x%lx) -> %ld%s",
+                              mode->dmPelsWidth, mode->dmPelsHeight, mode->dmBitsPerPel,
+                              mode->dmFields, static_cast<unsigned long>(flags), result,
+                              defer ? " (deferred)" : "");
+            }
+            platform::log(line);
+        },
+        [] {});
+    return result;
+}
+
 FARPROC WINAPI hook_GetProcAddress(HMODULE module, LPCSTR name) {
     const void* caller = _ReturnAddress();
-    const FARPROC result = originals().GetProcAddress(module, name);
+    FARPROC result = originals().GetProcAddress(module, name);
+    if (result != nullptr && !IS_INTRESOURCE(name) &&
+        std::string_view(name) == "ChangeDisplaySettingsA") {
+        result = reinterpret_cast<FARPROC>(&hook_ChangeDisplaySettingsA);
+    }
     const DWORD error = GetLastError();
     platform::guarded(
         "GetProcAddress",

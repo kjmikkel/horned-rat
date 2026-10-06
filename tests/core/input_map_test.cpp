@@ -52,3 +52,15 @@ TEST_CASE("deactivation is reported to the game as activation", "[input_map]") {
     CHECK(filter_activation(kWmActivateApp, 1) == 1u);
     CHECK(filter_activation(kWmKeyDown, 0) == 0u);
 }
+
+TEST_CASE("only a fresh Alt+Enter press toggles borderless", "[input_map]") {
+    using namespace hr::core::win;
+    const std::intptr_t alt = std::intptr_t{1} << 29;
+    const std::intptr_t repeat = std::intptr_t{1} << 30;
+    CHECK(hr::core::toggles_borderless(kWmSysKeyDown, kVkReturn, alt));
+    CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyDown, kVkReturn, alt | repeat));
+    CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyUp, kVkReturn, alt));
+    CHECK_FALSE(hr::core::toggles_borderless(kWmKeyDown, kVkReturn, 0));
+    CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyDown, 'A', alt));
+    CHECK_FALSE(hr::core::toggles_borderless(kWmSysKeyDown, kVkReturn, 0));
+}

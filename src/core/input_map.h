@@ -44,6 +44,10 @@ enum class Forward { None, Mouse, Keyboard };
 // Which presenter-window messages are passed on to the game (spec §5.2).
 Forward classify(unsigned message, std::uintptr_t wparam);
 
+// True for the key-down message of a fresh Alt+Enter press (not auto-repeat): the presenter
+// toggles borderless. lparam bit 29 = Alt held, bit 30 = key was already down.
+bool toggles_borderless(unsigned message, std::uintptr_t wparam, std::intptr_t lparam);
+
 bool is_mouse_button(int vk);
 
 // GetAsyncKeyState is global: a physical mouse button is shown to the game only while the
