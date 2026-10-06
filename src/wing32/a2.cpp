@@ -196,6 +196,7 @@ class Input final : public platform::PresenterInput {
         }
     }
     HCURSOR cursor() override { return shown_; }
+    void on_app_activation(bool) override {}
     HCURSOR shown_cursor() const { return shown_; }
     void set_shown_cursor(HCURSOR cursor) { shown_ = cursor; }
 

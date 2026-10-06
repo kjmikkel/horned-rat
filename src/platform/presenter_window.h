@@ -18,6 +18,9 @@ class PresenterInput {
     virtual void on_tick() = 0;
     // The cursor shown over the client area; nullptr = none (the owner draws its own).
     virtual HCURSOR cursor() = 0;
+    // On every WM_ACTIVATEAPP: true while one of our process's windows is in the foreground
+    // (the presenter or a game dialog), false once another application has it.
+    virtual void on_app_activation(bool active) = 0;
 };
 
 inline constexpr core::Size kMinClient{320, 240};
@@ -58,5 +61,8 @@ class PresenterWindow {
 // True if the real cursor is over `window`'s client area and no other window covers that point.
 // Any thread; coordinates in the calling thread's DPI context.
 bool cursor_in_client(HWND window);
+
+// True if `thread_id` is a running thread of this process.
+bool thread_in_this_process(DWORD thread_id);
 
 } // namespace hr::platform

@@ -25,6 +25,8 @@ struct FakeInput final : hr::platform::PresenterInput {
     void on_tick() override { ++ticks; }
     HCURSOR shown = nullptr;
     HCURSOR cursor() override { return shown; }
+    std::vector<bool> activations;
+    void on_app_activation(bool active) override { activations.push_back(active); }
 };
 
 } // namespace
@@ -263,4 +265,32 @@ TEST_CASE("cursor_in_client and refresh_cursor follow the real cursor", "[presen
     window.refresh_cursor();
     CHECK(GetCursor() == system_cursor(kArrow));
     SetCursorPos(saved.x, saved.y);
+}
+
+TEST_CASE("thread_in_this_process tells our threads from others", "[presenter_window]") {
+    CHECK(hr::platform::thread_in_this_process(GetCurrentThreadId()));
+    CHECK_FALSE(hr::platform::thread_in_this_process(0));
+
+    STARTUPINFOA startup{};
+    startup.cb = sizeof startup;
+    PROCESS_INFORMATION child{};
+    char command[] = "cmd.exe /c exit";
+    REQUIRE(CreateProcessA(nullptr, command, nullptr, nullptr, FALSE,
+                           CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                           &child));
+    CHECK_FALSE(hr::platform::thread_in_this_process(child.dwThreadId));
+    TerminateProcess(child.hProcess, 0);
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+}
+
+TEST_CASE("the presenter window reports the application's activation", "[presenter_window]") {
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {640, 480}, "test");
+    SendMessageA(window.hwnd(), WM_ACTIVATEAPP, TRUE, 0);
+    // Focus moved to a window of our own process (a game dialog): still active.
+    SendMessageA(window.hwnd(), WM_ACTIVATEAPP, FALSE, static_cast<LPARAM>(GetCurrentThreadId()));
+    // Focus moved to another application (thread id 0 = none of ours).
+    SendMessageA(window.hwnd(), WM_ACTIVATEAPP, FALSE, 0);
+    CHECK(input.activations == std::vector<bool>{true, true, false});
 }
