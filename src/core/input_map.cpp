@@ -29,6 +29,11 @@ bool toggles_borderless(unsigned message, std::uintptr_t wparam, std::intptr_t l
     return message == kWmSysKeyDown && wparam == static_cast<std::uintptr_t>(kVkReturn) &&
            (lparam & kAltDown) != 0 && (lparam & kWasDown) == 0;
 }
+
+bool skip_translate(bool presenter_active, unsigned message) {
+    return presenter_active && (message == kWmKeyDown || message == kWmSysKeyDown);
+}
+
 bool is_mouse_button(int vk) {
     return vk == kVkLButton || vk == kVkRButton || vk == kVkMButton || vk == kVkXButton1 ||
            vk == kVkXButton2;

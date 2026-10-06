@@ -108,6 +108,7 @@ struct Originals {
     decltype(&::GetWindowDC) GetWindowDC;
     decltype(&::BeginPaint) BeginPaint;
     decltype(&::GetAsyncKeyState) GetAsyncKeyState;
+    decltype(&::TranslateMessage) TranslateMessage;
     decltype(&::SetCursor) SetCursor;
     decltype(&::LoadCursorA) LoadCursorA;
     decltype(&::SetClassLongA) SetClassLongA;
@@ -148,6 +149,7 @@ const Originals& originals() {
         get(user32, "GetWindowDC", r.GetWindowDC);
         get(user32, "BeginPaint", r.BeginPaint);
         get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
+        get(user32, "TranslateMessage", r.TranslateMessage);
         get(user32, "SetCursor", r.SetCursor);
         get(user32, "LoadCursorA", r.LoadCursorA);
         get(user32, "SetClassLongA", r.SetClassLongA);
@@ -529,6 +531,14 @@ BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     return result;
 }
 
+BOOL WINAPI hook_TranslateMessage(const MSG* msg) {
+    const bool skip = platform::guarded(
+        "TranslateMessage",
+        [&] { return msg != nullptr && core::skip_translate(a2::active(), msg->message); },
+        [] { return false; });
+    return skip ? FALSE : originals().TranslateMessage(msg);
+}
+
 SHORT WINAPI hook_GetAsyncKeyState(int vk) {
     const SHORT state = originals().GetAsyncKeyState(vk);
     return platform::guarded(
@@ -795,6 +805,7 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "GetWindowDC", reinterpret_cast<void*>(&hook_GetWindowDC)},
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
     {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
+    {"USER32.dll", "TranslateMessage", reinterpret_cast<void*>(&hook_TranslateMessage)},
     {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
     {"USER32.dll", "LoadCursorA", reinterpret_cast<void*>(&hook_LoadCursorA)},
     {"USER32.dll", "SetClassLongA", reinterpret_cast<void*>(&hook_SetClassLongA)},

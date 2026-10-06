@@ -48,6 +48,11 @@ Forward classify(unsigned message, std::uintptr_t wparam);
 // toggles borderless. lparam bit 29 = Alt held, bit 30 = key was already down.
 bool toggles_borderless(unsigned message, std::uintptr_t wparam, std::intptr_t lparam);
 
+// True if the game's TranslateMessage must leave `message` alone: while the presenter runs it
+// forwards the characters it made from the real keyboard state, so translating the forwarded
+// key-down again in the game would type every character twice.
+bool skip_translate(bool presenter_active, unsigned message);
+
 bool is_mouse_button(int vk);
 
 // GetAsyncKeyState is global: a physical mouse button is shown to the game only while the
