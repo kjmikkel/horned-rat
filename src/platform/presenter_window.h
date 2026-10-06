@@ -35,12 +35,19 @@ class PresenterWindow {
     void show();
     core::Size client_size() const;
 
+    // Borderless: a popup covering the window's monitor. Leaving it restores the previous windowed
+    // size, position and state. Alt+Enter in the window toggles it.
+    void set_borderless(bool on);
+    bool borderless() const { return borderless_; }
+
   private:
     static LRESULT CALLBACK proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam);
     void place(core::Size client);
 
     PresenterInput& input_;
     HWND hwnd_ = nullptr;
+    WINDOWPLACEMENT windowed_{};
+    bool borderless_ = false;
 };
 
 } // namespace hr::platform

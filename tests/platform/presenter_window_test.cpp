@@ -147,3 +147,50 @@ TEST_CASE("the presenter window ticks while it is being moved or resized", "[pre
     }
     CHECK(input.ticks == after_exit);
 }
+namespace {
+RECT monitor_of(HWND window) {
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof monitor;
+    GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    return monitor.rcMonitor;
+}
+bool same(const RECT& a, const RECT& b) {
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+} // namespace
+
+TEST_CASE("borderless covers the monitor and leaving it restores the window",
+          "[presenter_window]") {
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {640, 480}, "test");
+    window.show();
+    RECT before{};
+    GetWindowRect(window.hwnd(), &before);
+
+    window.set_borderless(true);
+    CHECK(window.borderless());
+    RECT r{};
+    GetWindowRect(window.hwnd(), &r);
+    CHECK(same(r, monitor_of(window.hwnd())));
+    CHECK((GetWindowLongPtrA(window.hwnd(), GWL_STYLE) & WS_CAPTION) == 0);
+
+    window.set_borderless(false);
+    CHECK_FALSE(window.borderless());
+    GetWindowRect(window.hwnd(), &r);
+    CHECK(same(r, before));
+    CHECK((GetWindowLongPtrA(window.hwnd(), GWL_STYLE) & WS_CAPTION) == WS_CAPTION);
+}
+
+TEST_CASE("Alt+Enter toggles borderless and is not passed on as a key", "[presenter_window]") {
+    FakeInput input;
+    hr::platform::PresenterWindow window(input, {640, 480}, "test");
+    window.show();
+    const LPARAM alt = LPARAM{1} << 29;
+    SendMessageA(window.hwnd(), WM_SYSKEYDOWN, VK_RETURN, alt);
+    CHECK(window.borderless());
+    SendMessageA(window.hwnd(), WM_SYSKEYDOWN, VK_RETURN, alt | (LPARAM{1} << 30));
+    CHECK(window.borderless()); // auto-repeat does not toggle back
+    SendMessageA(window.hwnd(), WM_SYSKEYDOWN, VK_RETURN, alt);
+    CHECK_FALSE(window.borderless());
+    CHECK(input.keys == std::vector<UINT>{WM_SYSKEYDOWN}); // only the auto-repeat, which a2 drops
+}

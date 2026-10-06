@@ -1,5 +1,6 @@
 #include "platform/presenter_window.h"
 
+#include "core/input_map.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
 
@@ -57,6 +58,32 @@ void PresenterWindow::place(core::Size client) {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+void PresenterWindow::set_borderless(bool on) {
+    if (on == borderless_ || hwnd_ == nullptr) {
+        return;
+    }
+    const LONG_PTR style = GetWindowLongPtrA(hwnd_, GWL_STYLE);
+    if (on) {
+        windowed_.length = sizeof windowed_;
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof monitor;
+        if (!GetWindowPlacement(hwnd_, &windowed_) ||
+            !GetMonitorInfoA(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY), &monitor)) {
+            return;
+        }
+        SetWindowLongPtrA(hwnd_, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+        const RECT& r = monitor.rcMonitor;
+        SetWindowPos(hwnd_, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else {
+        SetWindowLongPtrA(hwnd_, GWL_STYLE, (style & ~WS_POPUP) | kWindowedStyle);
+        SetWindowPlacement(hwnd_, &windowed_);
+        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    borderless_ = on;
+}
+
 core::Size PresenterWindow::client_size() const {
     RECT client{};
     GetClientRect(hwnd_, &client);
@@ -112,10 +139,21 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
         self->input_.on_key(msg, wparam, lparam);
         return 0;
     case WM_SYSKEYDOWN:
-    case WM_SYSKEYUP:
-    case WM_SYSCHAR:
+        if (core::toggles_borderless(msg, wparam, lparam)) {
+            self->set_borderless(!self->borderless_);
+            return 0;
+        }
         self->input_.on_key(msg, wparam, lparam);
         break; // DefWindowProc keeps Alt+F4 and the system menu working
+    case WM_SYSCHAR:
+        if (wparam == '\r') {
+            return 0; // Alt+Enter: no beep
+        }
+        self->input_.on_key(msg, wparam, lparam);
+        break;
+    case WM_SYSKEYUP:
+        self->input_.on_key(msg, wparam, lparam);
+        break;
     case WM_CLOSE:
         self->input_.on_close();
         return 0;
