@@ -526,6 +526,10 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
     monitor.cbSize = sizeof monitor;
     GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
     g_hidden_state = platform::hide_window(window, monitor.rcWork);
+    // A thread that fetches no messages for ~5 s gets its windows replaced by a visible "Not
+    // Responding" ghost copy. background = pause holds the game thread for as long as the user
+    // is away, and the ghost of the hidden window showed as a small copy at the top left (A2.4).
+    DisableProcessWindowsGhosting();
     platform::log("presenter: starting for the main window (hidden at creation)");
     // Diagnostics: the game handles its own crashes by exiting with the exception code, so the
     // place of an access violation is logged first chance. Never destroyed.
