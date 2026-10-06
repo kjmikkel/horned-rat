@@ -1,6 +1,9 @@
 #include "platform/presenter_d3d11.h"
 
-#include <algorithm>
+#include "core/scaling.h"
+
+#include <d3dcompiler.h>
+
 #include <cstdio>
 #include <cstring>
 
@@ -14,6 +17,53 @@ std::string hresult_text(const char* what, HRESULT hr) {
     std::snprintf(text, sizeof text, "%s failed (0x%08lX)", what, static_cast<unsigned long>(hr));
     return text;
 }
+
+// One quad from SV_VertexID (no vertex buffer), drawn into a viewport equal to the destination
+// rect. mode 0 = point; mode 1 = sharp-bilinear: inside a texel's centre region the sample snaps
+// to the texel centre, only a band of width 1/prescale at the edges is blended.
+constexpr char kShader[] = R"(
+cbuffer Params : register(b0) {
+    float2 tex_size;
+    float2 prescale;
+    uint mode;
+};
+Texture2D frame_tex : register(t0);
+SamplerState point_sampler : register(s0);
+SamplerState linear_sampler : register(s1);
+
+struct VsOut {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+VsOut vs_main(uint id : SV_VertexID) {
+    VsOut o;
+    const float2 uv = float2(id & 1, id >> 1);
+    o.uv = uv;
+    o.pos = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    return o;
+}
+
+float4 ps_main(VsOut i) : SV_Target {
+    if (mode == 0) {
+        return frame_tex.Sample(point_sampler, i.uv);
+    }
+    const float2 texel = i.uv * tex_size;
+    const float2 base = floor(texel);
+    const float2 dist = frac(texel) - 0.5;
+    const float2 range = 0.5 - 0.5 / prescale;
+    const float2 f = (dist - clamp(dist, -range, range)) * prescale + 0.5;
+    return frame_tex.Sample(linear_sampler, (base + f) / tex_size);
+}
+)";
+
+struct Constants {
+    float tex_size[2];
+    float prescale[2];
+    std::uint32_t mode;
+    std::uint32_t padding[3];
+};
+static_assert(sizeof(Constants) == 32);
 } // namespace
 
 std::unique_ptr<D3DPresenter> D3DPresenter::create(HWND window, core::Size size,
@@ -59,16 +109,90 @@ std::unique_ptr<D3DPresenter> D3DPresenter::create(HWND window, core::Size size,
         error = hresult_text("CreateSwapChainForHwnd", hr);
         return nullptr;
     }
-    factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER); // Alt+Enter is ours (A2.2)
+    factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER); // Alt+Enter is ours
 
-    if (FAILED(hr = p->swap_chain_->GetBuffer(0, IID_PPV_ARGS(&p->back_buffer_))) ||
-        FAILED(
-            hr = p->device_->CreateRenderTargetView(p->back_buffer_.Get(), nullptr, &p->target_))) {
-        error = hresult_text("back buffer setup", hr);
+    p->size_ = size;
+    if (!p->create_target()) {
+        error = "back buffer setup failed";
         return nullptr;
     }
-    p->size_ = size;
+    if (!p->create_pipeline(error)) {
+        return nullptr;
+    }
     return p;
+}
+
+bool D3DPresenter::create_target() {
+    return SUCCEEDED(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer_))) &&
+           SUCCEEDED(device_->CreateRenderTargetView(back_buffer_.Get(), nullptr, &target_));
+}
+
+bool D3DPresenter::create_pipeline(std::string& error) {
+    ComPtr<ID3DBlob> vs;
+    ComPtr<ID3DBlob> ps;
+    ComPtr<ID3DBlob> messages;
+    HRESULT hr = D3DCompile(kShader, sizeof kShader - 1, "presenter", nullptr, nullptr, "vs_main",
+                            "vs_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &messages);
+    if (SUCCEEDED(hr)) {
+        hr = D3DCompile(kShader, sizeof kShader - 1, "presenter", nullptr, nullptr, "ps_main",
+                        "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &messages);
+    }
+    if (FAILED(hr)) {
+        error = hresult_text("shader compile", hr);
+        if (messages) {
+            error += ": ";
+            error.append(static_cast<const char*>(messages->GetBufferPointer()),
+                         messages->GetBufferSize());
+        }
+        return false;
+    }
+    if (FAILED(hr = device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(),
+                                                nullptr, &vertex_shader_)) ||
+        FAILED(hr = device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr,
+                                               &pixel_shader_))) {
+        error = hresult_text("shader creation", hr);
+        return false;
+    }
+
+    D3D11_BUFFER_DESC buffer{};
+    buffer.ByteWidth = sizeof(Constants);
+    buffer.Usage = D3D11_USAGE_DEFAULT;
+    buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SAMPLER_DESC sampler{};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    D3D11_SAMPLER_DESC linear = sampler;
+    linear.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    D3D11_RASTERIZER_DESC raster{};
+    raster.FillMode = D3D11_FILL_SOLID;
+    raster.CullMode = D3D11_CULL_NONE;
+    raster.DepthClipEnable = TRUE;
+    if (FAILED(hr = device_->CreateBuffer(&buffer, nullptr, &constants_)) ||
+        FAILED(hr = device_->CreateSamplerState(&sampler, &point_sampler_)) ||
+        FAILED(hr = device_->CreateSamplerState(&linear, &linear_sampler_)) ||
+        FAILED(hr = device_->CreateRasterizerState(&raster, &rasterizer_))) {
+        error = hresult_text("pipeline state", hr);
+        return false;
+    }
+    return true;
+}
+
+bool D3DPresenter::resize(core::Size size) {
+    if (size == size_ || size.width <= 0 || size.height <= 0) {
+        return true;
+    }
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
+    target_.Reset();
+    back_buffer_.Reset();
+    context_->Flush();
+    if (FAILED(swap_chain_->ResizeBuffers(0, static_cast<UINT>(size.width),
+                                          static_cast<UINT>(size.height), DXGI_FORMAT_UNKNOWN,
+                                          0))) {
+        return false;
+    }
+    size_ = size;
+    return create_target();
 }
 
 bool D3DPresenter::ensure_frame_texture(core::Size frame) {
@@ -76,6 +200,7 @@ bool D3DPresenter::ensure_frame_texture(core::Size frame) {
         return true;
     }
     frame_.Reset();
+    frame_view_.Reset();
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = static_cast<UINT>(frame.width);
     desc.Height = static_cast<UINT>(frame.height);
@@ -85,33 +210,56 @@ bool D3DPresenter::ensure_frame_texture(core::Size frame) {
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &frame_))) {
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &frame_)) ||
+        FAILED(device_->CreateShaderResourceView(frame_.Get(), nullptr, &frame_view_))) {
+        frame_.Reset();
         return false;
     }
     frame_size_ = frame;
     return true;
 }
 
-void D3DPresenter::render(const std::uint32_t* bgra, core::Size frame, core::Rect dest) {
+void D3DPresenter::render(const std::uint32_t* bgra, core::Size frame, core::Rect dest,
+                          Filter filter) {
     const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     context_->ClearRenderTargetView(target_.Get(), black);
-    if (bgra == nullptr || frame.width <= 0 || frame.height <= 0 || !ensure_frame_texture(frame)) {
+    if (bgra == nullptr || frame.width <= 0 || frame.height <= 0 || dest.width <= 0 ||
+        dest.height <= 0 || !ensure_frame_texture(frame)) {
         return;
     }
     context_->UpdateSubresource(frame_.Get(), 0, nullptr, bgra, static_cast<UINT>(frame.width) * 4,
                                 0);
 
-    const int left = std::max(dest.x, 0);
-    const int top = std::max(dest.y, 0);
-    const int right = std::min(dest.x + std::min(dest.width, frame.width), size_.width);
-    const int bottom = std::min(dest.y + std::min(dest.height, frame.height), size_.height);
-    if (right <= left || bottom <= top) {
-        return;
-    }
-    const D3D11_BOX box{static_cast<UINT>(left - dest.x),  static_cast<UINT>(top - dest.y),    0,
-                        static_cast<UINT>(right - dest.x), static_cast<UINT>(bottom - dest.y), 1};
-    context_->CopySubresourceRegion(back_buffer_.Get(), 0, static_cast<UINT>(left),
-                                    static_cast<UINT>(top), 0, frame_.Get(), 0, &box);
+    const core::Size prescale = core::sharp_prescale(frame, dest);
+    const Constants constants{
+        {static_cast<float>(frame.width), static_cast<float>(frame.height)},
+        {static_cast<float>(prescale.width), static_cast<float>(prescale.height)},
+        filter == Filter::Sharp ? 1u : 0u,
+        {}};
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+
+    // The viewport is the destination rect; parts outside the back buffer are clipped.
+    const D3D11_VIEWPORT viewport{static_cast<float>(dest.x),
+                                  static_cast<float>(dest.y),
+                                  static_cast<float>(dest.width),
+                                  static_cast<float>(dest.height),
+                                  0.0f,
+                                  1.0f};
+    ID3D11RenderTargetView* const targets[] = {target_.Get()};
+    ID3D11Buffer* const buffers[] = {constants_.Get()};
+    ID3D11ShaderResourceView* const views[] = {frame_view_.Get()};
+    ID3D11SamplerState* const samplers[] = {point_sampler_.Get(), linear_sampler_.Get()};
+    context_->OMSetRenderTargets(1, targets, nullptr);
+    context_->RSSetViewports(1, &viewport);
+    context_->RSSetState(rasterizer_.Get());
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    context_->VSSetShader(vertex_shader_.Get(), nullptr, 0);
+    context_->PSSetShader(pixel_shader_.Get(), nullptr, 0);
+    context_->PSSetConstantBuffers(0, 1, buffers);
+    context_->PSSetShaderResources(0, 1, views);
+    context_->PSSetSamplers(0, 2, samplers);
+    context_->Draw(4, 0);
 }
 
 void D3DPresenter::present(bool vsync) { swap_chain_->Present(vsync ? 1 : 0, 0); }

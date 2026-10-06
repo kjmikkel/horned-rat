@@ -229,7 +229,8 @@ void presenter_body() {
                 return;
             }
             const auto t1 = Clock::now();
-            d3d->render(capture.pixels(), capture.size(), dest);
+            d3d->render(capture.pixels(), capture.size(), dest,
+                        platform::D3DPresenter::Filter::Point);
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
