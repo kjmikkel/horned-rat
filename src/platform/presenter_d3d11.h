@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,14 @@ class D3DPresenter {
     void render(const std::uint32_t* bgra, core::Size frame, core::Rect dest, Filter filter);
     void present(bool vsync);
 
+    // Cursor sprites (A2 spec §5.3), kept per `key` for the presenter's lifetime. `bgra` is
+    // straight-alpha 0xAARRGGBB. False if the texture cannot be made.
+    bool add_sprite(std::uintptr_t key, const std::uint32_t* bgra, core::Size size);
+    bool has_sprite(std::uintptr_t key) const { return sprites_.count(key) != 0; }
+    // Blends the sprite over what render() drew, nearest-neighbour scaled into `where`, which may
+    // extend past the back buffer. False for an unknown key or an empty rect.
+    bool draw_sprite(std::uintptr_t key, core::Rect where);
+
     // The current back buffer as 0x??RRGGBB pixels (tests).
     std::vector<std::uint32_t> read_back();
 
@@ -46,6 +55,8 @@ class D3DPresenter {
     bool create_pipeline(std::string& error);
     bool ensure_frame_texture(core::Size frame);
     bool create_target();
+    // Binds the pipeline and draws the quad into `where` from `view` (constants already set).
+    void draw_quad(ID3D11ShaderResourceView* view, core::Rect where, ID3D11BlendState* blend);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
@@ -60,6 +71,8 @@ class D3DPresenter {
     Microsoft::WRL::ComPtr<ID3D11SamplerState> point_sampler_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> linear_sampler_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> alpha_blend_;
+    std::map<std::uintptr_t, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> sprites_;
     core::Size frame_size_{};
     core::Size size_{};
     Driver driver_ = Driver::Warp;

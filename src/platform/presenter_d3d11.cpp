@@ -168,10 +168,21 @@ bool D3DPresenter::create_pipeline(std::string& error) {
     raster.FillMode = D3D11_FILL_SOLID;
     raster.CullMode = D3D11_CULL_NONE;
     raster.DepthClipEnable = TRUE;
+    D3D11_BLEND_DESC blend{};
+    D3D11_RENDER_TARGET_BLEND_DESC& target = blend.RenderTarget[0];
+    target.BlendEnable = TRUE;
+    target.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    target.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    target.BlendOp = D3D11_BLEND_OP_ADD;
+    target.SrcBlendAlpha = D3D11_BLEND_ONE;
+    target.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     if (FAILED(hr = device_->CreateBuffer(&buffer, nullptr, &constants_)) ||
         FAILED(hr = device_->CreateSamplerState(&sampler, &point_sampler_)) ||
         FAILED(hr = device_->CreateSamplerState(&linear, &linear_sampler_)) ||
-        FAILED(hr = device_->CreateRasterizerState(&raster, &rasterizer_))) {
+        FAILED(hr = device_->CreateRasterizerState(&raster, &rasterizer_)) ||
+        FAILED(hr = device_->CreateBlendState(&blend, &alpha_blend_))) {
         error = hresult_text("pipeline state", hr);
         return false;
     }
@@ -238,18 +249,24 @@ void D3DPresenter::render(const std::uint32_t* bgra, core::Size frame, core::Rec
         {}};
     context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
 
-    // The viewport is the destination rect; parts outside the back buffer are clipped.
-    const D3D11_VIEWPORT viewport{static_cast<float>(dest.x),
-                                  static_cast<float>(dest.y),
-                                  static_cast<float>(dest.width),
-                                  static_cast<float>(dest.height),
+    draw_quad(frame_view_.Get(), dest, nullptr);
+}
+
+void D3DPresenter::draw_quad(ID3D11ShaderResourceView* view, core::Rect where,
+                             ID3D11BlendState* blend) {
+    // The viewport is the target rect; parts outside the back buffer are clipped.
+    const D3D11_VIEWPORT viewport{static_cast<float>(where.x),
+                                  static_cast<float>(where.y),
+                                  static_cast<float>(where.width),
+                                  static_cast<float>(where.height),
                                   0.0f,
                                   1.0f};
     ID3D11RenderTargetView* const targets[] = {target_.Get()};
     ID3D11Buffer* const buffers[] = {constants_.Get()};
-    ID3D11ShaderResourceView* const views[] = {frame_view_.Get()};
+    ID3D11ShaderResourceView* const views[] = {view};
     ID3D11SamplerState* const samplers[] = {point_sampler_.Get(), linear_sampler_.Get()};
     context_->OMSetRenderTargets(1, targets, nullptr);
+    context_->OMSetBlendState(blend, nullptr, 0xFFFFFFFFu);
     context_->RSSetViewports(1, &viewport);
     context_->RSSetState(rasterizer_.Get());
     context_->IASetInputLayout(nullptr);
@@ -263,6 +280,41 @@ void D3DPresenter::render(const std::uint32_t* bgra, core::Size frame, core::Rec
 }
 
 void D3DPresenter::present(bool vsync) { swap_chain_->Present(vsync ? 1 : 0, 0); }
+
+bool D3DPresenter::add_sprite(std::uintptr_t key, const std::uint32_t* bgra, core::Size size) {
+    if (bgra == nullptr || size.width <= 0 || size.height <= 0) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = static_cast<UINT>(size.width);
+    desc.Height = static_cast<UINT>(size.height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA data{bgra, static_cast<UINT>(size.width) * 4, 0};
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> view;
+    if (FAILED(device_->CreateTexture2D(&desc, &data, &texture)) ||
+        FAILED(device_->CreateShaderResourceView(texture.Get(), nullptr, &view))) {
+        return false;
+    }
+    sprites_[key] = view;
+    return true;
+}
+
+bool D3DPresenter::draw_sprite(std::uintptr_t key, core::Rect where) {
+    const auto it = sprites_.find(key);
+    if (it == sprites_.end() || where.width <= 0 || where.height <= 0) {
+        return false;
+    }
+    const Constants constants{{1.0f, 1.0f}, {1.0f, 1.0f}, 0u, {}}; // mode 0: point sampling
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+    draw_quad(it->second.Get(), where, alpha_blend_.Get());
+    return true;
+}
 
 std::vector<std::uint32_t> D3DPresenter::read_back() {
     D3D11_TEXTURE2D_DESC desc{};

@@ -211,3 +211,53 @@ TEST_CASE("sharp scaling at a fractional factor keeps texel centres and blends o
     CHECK(blended > 0);          // and it is not plain nearest neighbour
     DestroyWindow(window);
 }
+TEST_CASE("cursor sprites are alpha-blended over the frame, scaled and clipped",
+          "[presenter_d3d11]") {
+    const HWND window = hr::test::make_window(0, 0, 64, 48);
+    auto presenter = make(window);
+    const std::vector<std::uint32_t> frame(64 * 48, 0x00102030u);
+    // 2x2: opaque red, transparent, half green, opaque blue
+    const std::uint32_t sprite[] = {0xFFFF0000u, 0x00000000u, 0x8000FF00u, 0xFF0000FFu};
+    CHECK_FALSE(presenter->has_sprite(7));
+    REQUIRE(presenter->add_sprite(7, sprite, {2, 2}));
+    CHECK(presenter->has_sprite(7));
+
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    CHECK(presenter->draw_sprite(7, {10, 10, 4, 4}));
+    CHECK(presenter->draw_sprite(7, {-2, -2, 4, 4})); // only its bottom-right texel is visible
+    CHECK_FALSE(presenter->draw_sprite(8, {0, 0, 4, 4}));
+    const auto pixels = presenter->read_back();
+    REQUIRE(pixels.size() == 64u * 48u);
+    const auto at = [&](int x, int y) {
+        return pixels[static_cast<size_t>(y) * 64 + static_cast<size_t>(x)] & 0xFFFFFFu;
+    };
+
+    CHECK(at(10, 10) == 0xFF0000u);
+    CHECK(at(11, 11) == 0xFF0000u);
+    CHECK(at(12, 10) == 0x102030u); // transparent texel
+    CHECK(at(13, 13) == 0x0000FFu);
+    const std::uint32_t half = at(10, 12); // 0x00FF00 at 128/255 over 0x102030
+    CHECK(std::abs(channel(half, 16) - 0x08) <= 2);
+    CHECK(std::abs(channel(half, 8) - 0x90) <= 2);
+    CHECK(std::abs(channel(half, 0) - 0x18) <= 2);
+    CHECK(at(0, 0) == 0x0000FFu);
+    CHECK(at(2, 2) == 0x102030u);
+    CHECK(at(14, 14) == 0x102030u);
+    presenter->present(false);
+    DestroyWindow(window);
+}
+
+TEST_CASE("the next frame is drawn opaque again after a sprite", "[presenter_d3d11]") {
+    const HWND window = hr::test::make_window(0, 0, 64, 48);
+    auto presenter = make(window);
+    const std::uint32_t sprite[] = {0x80FFFFFFu};
+    REQUIRE(presenter->add_sprite(1, sprite, {1, 1}));
+    const std::vector<std::uint32_t> frame(64 * 48, 0x00405060u);
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    presenter->draw_sprite(1, {0, 0, 8, 8});
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    const auto pixels = presenter->read_back();
+    CHECK((pixels[0] & 0xFFFFFFu) == 0x405060u);
+    presenter->present(false);
+    DestroyWindow(window);
+}
