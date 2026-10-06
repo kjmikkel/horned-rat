@@ -1,0 +1,3 @@
+add_executable(stack_dump stack_dump.cpp)
+target_link_libraries(stack_dump PRIVATE dbghelp hr_warnings)
+target_compile_definitions(stack_dump PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)

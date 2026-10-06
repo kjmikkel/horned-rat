@@ -126,6 +126,13 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
     if (msg == WM_DESTROY) {
         g_active = false;
         g_stop = true;
+        // The game only posts WM_QUIT on its own exit path (the curtain dialog). Closed any other
+        // way (the presenter's close button, Alt+F4), its GetMessage loop waited forever with no
+        // window left (A2.2 smoke test; a WM_QUIT posted by hand let it exit normally). A second
+        // WM_QUIT after the game's own is harmless: PostQuitMessage only sets a flag.
+        const LRESULT result = CallWindowProcA(original, window, msg, wparam, lparam);
+        PostQuitMessage(0);
+        return result;
     }
     return CallWindowProcA(original, window, msg, wparam, lparam);
 }
