@@ -8,6 +8,7 @@
 #include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
 #include "platform/log.h"
+#include "platform/message_spy.h"
 #include "platform/presenter_d3d11.h"
 #include "platform/presenter_window.h"
 #include "platform/window_capture.h"
@@ -23,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace hr::wing32::a2 {
 namespace {
@@ -364,6 +366,18 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
     GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
     g_hidden_state = platform::hide_window(window, monitor.rcWork);
     platform::log("presenter: starting for the main window (hidden at creation)");
+    if (settings().config.message_census) {
+        // On the game thread, so the spy sees that thread's windows. Never destroyed: the game's
+        // windows live until the process ends.
+        static platform::MessageSpy spy(std::chrono::seconds(5),
+                                        [](const std::vector<std::string>& lines) {
+                                            for (const auto& line : lines) {
+                                                platform::log("diag: census " + line);
+                                            }
+                                        });
+        platform::log(std::string("diag: message census ") +
+                      (spy.installed() ? "on" : "could not be installed"));
+    }
     std::thread(presenter_main).detach();
 }
 
