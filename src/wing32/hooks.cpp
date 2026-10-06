@@ -13,6 +13,7 @@
 #include "platform/iat_hook.h"
 #include "platform/log.h"
 #include "platform/modules.h"
+#include "platform/vtable_patch.h"
 #include "wing32/a2.h"
 #include "wing32/runtime.h"
 
@@ -175,37 +176,48 @@ const Originals& originals() {
     return o;
 }
 
-// ---- DSOUND (diagnostics) ----
+// ---- DSOUND ----
 
+// Every DirectSound object and secondary buffer the game makes gets its vtable patched; each
+// vtable keeps its own originals (the game makes several DirectSound objects, A2.4).
+// IDirectSound: 2 Release, 3 CreateSoundBuffer, 5 DuplicateSoundBuffer, 6 SetCooperativeLevel.
+// IDirectSoundBuffer: 2 Release, 9 GetStatus, 12 Play, 18 Stop.
+platform::VtablePatches g_vtables;
+std::atomic<std::uint64_t> g_sound_buffers{0};
+// The game's secondary buffers, for background = pause.
+core::SoundPause g_sound_pause;
+
+template <typename Fn> Fn original_of(void* object, int slot) {
+    return reinterpret_cast<Fn>(g_vtables.original(object, slot));
+}
+
+using Release_t = ULONG(STDMETHODCALLTYPE*)(IUnknown*);
 using SetCooperativeLevel_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, HWND, DWORD);
 using CreateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPCDSBUFFERDESC,
                                                         LPDIRECTSOUNDBUFFER*, LPUNKNOWN);
-std::atomic<SetCooperativeLevel_t> g_set_cooperative_level{nullptr};
-std::atomic<CreateSoundBuffer_t> g_create_sound_buffer{nullptr};
-std::atomic<std::uint64_t> g_sound_buffers{0};
-
-// The game's secondary buffers, for background = pause (core::SoundPause). IDirectSound slot 5
-// is DuplicateSoundBuffer; IDirectSoundBuffer slot 2 is Release (one vtable for all buffers).
 using DuplicateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPDIRECTSOUNDBUFFER,
                                                            LPDIRECTSOUNDBUFFER*);
-using BufferRelease_t = ULONG(STDMETHODCALLTYPE*)(IDirectSoundBuffer*);
-std::atomic<DuplicateSoundBuffer_t> g_duplicate_sound_buffer{nullptr};
-std::atomic<BufferRelease_t> g_buffer_release{nullptr};
-core::SoundPause g_sound_pause;
+using GetStatus_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*, LPDWORD);
+using Play_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*, DWORD, DWORD, DWORD);
+using Stop_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*);
 
+// Calls the original buffer functions: the hooks would call back into g_sound_pause, whose lock
+// is held while this runs.
 class DirectSoundControl final : public core::SoundPause::Control {
   public:
     std::optional<bool> stop_if_playing(std::uintptr_t id) override {
         auto* const buffer = reinterpret_cast<IDirectSoundBuffer*>(id);
         DWORD status = 0;
-        if (FAILED(buffer->GetStatus(&status)) || (status & DSBSTATUS_PLAYING) == 0) {
+        if (FAILED(original_of<GetStatus_t>(buffer, 9)(buffer, &status)) ||
+            (status & DSBSTATUS_PLAYING) == 0) {
             return std::nullopt;
         }
-        buffer->Stop();
+        original_of<Stop_t>(buffer, 18)(buffer);
         return (status & DSBSTATUS_LOOPING) != 0;
     }
     void play(std::uintptr_t id, bool looping) override {
-        reinterpret_cast<IDirectSoundBuffer*>(id)->Play(0, 0, looping ? DSBPLAY_LOOPING : 0);
+        auto* const buffer = reinterpret_cast<IDirectSoundBuffer*>(id);
+        original_of<Play_t>(buffer, 12)(buffer, 0, 0, looping ? DSBPLAY_LOOPING : 0);
     }
 };
 
@@ -217,6 +229,50 @@ std::string window_class(HWND window) {
     return name;
 }
 
+std::uintptr_t id_of(const void* object) { return reinterpret_cast<std::uintptr_t>(object); }
+
+ULONG STDMETHODCALLTYPE hook_BufferRelease(IUnknown* self) {
+    // Under SoundPause's lock: a pause never stops a buffer that is being freed.
+    return g_sound_pause.release(id_of(self),
+                                 [&] { return original_of<Release_t>(self, 2)(self); });
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferGetStatus(IDirectSoundBuffer* self, LPDWORD status) {
+    // A buffer the pause stopped (or held back) still plays as far as the game knows.
+    if (const auto looping = g_sound_pause.reported_playing(id_of(self)); looping && status) {
+        *status = DSBSTATUS_PLAYING | (*looping ? DSBSTATUS_LOOPING : 0);
+        return DS_OK;
+    }
+    return original_of<GetStatus_t>(self, 9)(self, status);
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferPlay(IDirectSoundBuffer* self, DWORD reserved, DWORD priority,
+                                          DWORD flags) {
+    if (!g_sound_pause.allow_play(id_of(self), (flags & DSBPLAY_LOOPING) != 0)) {
+        return DS_OK; // played on resume
+    }
+    return original_of<Play_t>(self, 12)(self, reserved, priority, flags);
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferStop(IDirectSoundBuffer* self) {
+    g_sound_pause.note_stop(id_of(self));
+    return original_of<Stop_t>(self, 18)(self);
+}
+
+void track_sound_buffer(IDirectSoundBuffer* buffer, IDirectSound* device) {
+    g_vtables.patch(buffer, 2, reinterpret_cast<void*>(&hook_BufferRelease));
+    g_vtables.patch(buffer, 9, reinterpret_cast<void*>(&hook_BufferGetStatus));
+    g_vtables.patch(buffer, 12, reinterpret_cast<void*>(&hook_BufferPlay));
+    g_vtables.patch(buffer, 18, reinterpret_cast<void*>(&hook_BufferStop));
+    g_sound_pause.add(id_of(buffer), id_of(device));
+}
+
+ULONG STDMETHODCALLTYPE hook_DeviceRelease(IUnknown* self) {
+    // The last release of a DirectSound object frees its buffers without their own Release.
+    return g_sound_pause.release_device(id_of(self),
+                                        [&] { return original_of<Release_t>(self, 2)(self); });
+}
+
 HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND window, DWORD level) {
     platform::guarded(
         "SetCooperativeLevel",
@@ -225,30 +281,7 @@ HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND wind
                           window_class(window) + "' level=" + std::to_string(level));
         },
         [] {});
-    return g_set_cooperative_level.load()(self, window, level);
-}
-
-void patch_vtable_slot(void** vtable, int index, void* replacement) {
-    DWORD old = 0;
-    if (VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old)) {
-        vtable[index] = replacement;
-        VirtualProtect(&vtable[index], sizeof(void*), old, &old);
-    }
-}
-
-ULONG STDMETHODCALLTYPE hook_BufferRelease(IDirectSoundBuffer* self) {
-    // Released under SoundPause's lock: a pause never stops a buffer that is being freed.
-    return g_sound_pause.release(reinterpret_cast<std::uintptr_t>(self),
-                                 [&] { return g_buffer_release.load()(self); });
-}
-
-void track_sound_buffer(IDirectSoundBuffer* buffer) {
-    auto** const vtable = *reinterpret_cast<void***>(buffer);
-    if (vtable[2] != reinterpret_cast<void*>(&hook_BufferRelease)) {
-        g_buffer_release = reinterpret_cast<BufferRelease_t>(vtable[2]);
-        patch_vtable_slot(vtable, 2, reinterpret_cast<void*>(&hook_BufferRelease));
-    }
-    g_sound_pause.add(reinterpret_cast<std::uintptr_t>(buffer));
+    return original_of<SetCooperativeLevel_t>(self, 6)(self, window, level);
 }
 
 HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFERDESC desc,
@@ -268,25 +301,27 @@ HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFER
             }
         },
         [] {});
+    const auto create = original_of<CreateSoundBuffer_t>(self, 3);
     if (desc == nullptr) {
-        return g_create_sound_buffer.load()(self, desc, buffer, outer);
+        return create(self, desc, buffer, outer);
     }
     DSBUFFERDESC copy = *desc;
     copy.dwFlags = core::with_global_focus(copy.dwFlags);
-    const HRESULT result = g_create_sound_buffer.load()(self, &copy, buffer, outer);
+    const HRESULT result = create(self, &copy, buffer, outer);
     if (SUCCEEDED(result) && buffer != nullptr && *buffer != nullptr &&
         (desc->dwFlags & DSBCAPS_PRIMARYBUFFER) == 0) {
-        platform::guarded("CreateSoundBuffer track", [&] { track_sound_buffer(*buffer); }, [] {});
+        platform::guarded(
+            "CreateSoundBuffer track", [&] { track_sound_buffer(*buffer, self); }, [] {});
     }
     return result;
 }
 
 HRESULT STDMETHODCALLTYPE hook_DuplicateSoundBuffer(IDirectSound* self, LPDIRECTSOUNDBUFFER source,
                                                     LPDIRECTSOUNDBUFFER* duplicate) {
-    const HRESULT result = g_duplicate_sound_buffer.load()(self, source, duplicate);
+    const HRESULT result = original_of<DuplicateSoundBuffer_t>(self, 5)(self, source, duplicate);
     if (SUCCEEDED(result) && duplicate != nullptr && *duplicate != nullptr) {
         platform::guarded(
-            "DuplicateSoundBuffer track", [&] { track_sound_buffer(*duplicate); }, [] {});
+            "DuplicateSoundBuffer track", [&] { track_sound_buffer(*duplicate, self); }, [] {});
     }
     return result;
 }
@@ -302,23 +337,11 @@ HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKN
             platform::log(std::string("diag: DirectSoundCreate from ") +
                           platform::module_file_name_from_address(caller) + " -> " + text);
             if (SUCCEEDED(result) && sound != nullptr && *sound != nullptr) {
-                auto** const vtable = *reinterpret_cast<void***>(*sound);
-                // IDirectSound: 3 = CreateSoundBuffer, 5 = DuplicateSoundBuffer,
-                // 6 = SetCooperativeLevel.
-                if (vtable[5] != reinterpret_cast<void*>(&hook_DuplicateSoundBuffer)) {
-                    g_duplicate_sound_buffer = reinterpret_cast<DuplicateSoundBuffer_t>(vtable[5]);
-                    patch_vtable_slot(vtable, 5,
-                                      reinterpret_cast<void*>(&hook_DuplicateSoundBuffer));
-                }
-                if (vtable[3] != reinterpret_cast<void*>(&hook_CreateSoundBuffer)) {
-                    g_create_sound_buffer = reinterpret_cast<CreateSoundBuffer_t>(vtable[3]);
-                    patch_vtable_slot(vtable, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
-                }
-                if (vtable[6] != reinterpret_cast<void*>(&hook_SetCooperativeLevel)) {
-                    g_set_cooperative_level = reinterpret_cast<SetCooperativeLevel_t>(vtable[6]);
-                    patch_vtable_slot(vtable, 6,
-                                      reinterpret_cast<void*>(&hook_SetCooperativeLevel));
-                }
+                IDirectSound* const device = *sound;
+                g_vtables.patch(device, 2, reinterpret_cast<void*>(&hook_DeviceRelease));
+                g_vtables.patch(device, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
+                g_vtables.patch(device, 5, reinterpret_cast<void*>(&hook_DuplicateSoundBuffer));
+                g_vtables.patch(device, 6, reinterpret_cast<void*>(&hook_SetCooperativeLevel));
             }
         },
         [] {});
