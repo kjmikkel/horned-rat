@@ -16,7 +16,8 @@ class PresenterInput {
     // Every 15 ms while the user moves or resizes the window: Windows runs a modal loop then, so
     // the owner's own loop does not run.
     virtual void on_tick() = 0;
-    virtual HCURSOR cursor() = 0; // nullptr = standard arrow
+    // The cursor shown over the client area; nullptr = none (the owner draws its own).
+    virtual HCURSOR cursor() = 0;
 };
 
 inline constexpr core::Size kMinClient{320, 240};
@@ -40,6 +41,10 @@ class PresenterWindow {
     void set_borderless(bool on);
     bool borderless() const { return borderless_; }
 
+    // Shows input.cursor() at once if the real cursor is over the client area. Windows asks with
+    // WM_SETCURSOR only when the mouse moves, so a changed cursor would otherwise wait for that.
+    void refresh_cursor();
+
   private:
     static LRESULT CALLBACK proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam);
     void place(core::Size client);
@@ -49,5 +54,9 @@ class PresenterWindow {
     WINDOWPLACEMENT windowed_{};
     bool borderless_ = false;
 };
+
+// True if the real cursor is over `window`'s client area and no other window covers that point.
+// Any thread; coordinates in the calling thread's DPI context.
+bool cursor_in_client(HWND window);
 
 } // namespace hr::platform

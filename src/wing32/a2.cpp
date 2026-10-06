@@ -193,11 +193,14 @@ class Input final : public platform::PresenterInput {
             tick_();
         }
     }
-    HCURSOR cursor() override { return g_cursor; }
+    HCURSOR cursor() override { return shown_; }
+    HCURSOR shown_cursor() const { return shown_; }
+    void set_shown_cursor(HCURSOR cursor) { shown_ = cursor; }
 
   private:
     core::Rect dest_{0, 0, 640, 480};
     std::function<void()> tick_;
+    HCURSOR shown_ = LoadCursorA(nullptr, IDC_ARROW);
 };
 
 void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
@@ -290,6 +293,10 @@ void presenter_body() {
 
         // One frame: follow the window size, capture, scale, present. Runs from the loop below
         // and from on_tick while the user drags the window frame.
+        const HCURSOR arrow = LoadCursorA(nullptr, IDC_ARROW);
+        platform::log(std::string("presenter: cursor ") +
+                      (config.cursor == core::CursorMode::Scaled ? "scaled" : "native"));
+
         const auto frame = [&] {
             if (!failure.empty()) {
                 return;
@@ -304,6 +311,13 @@ void presenter_body() {
             const core::Rect dest = core::dest_rect(client, {content.width, content.height},
                                                     config.scale, config.aspect);
             input.set_dest(dest);
+            // Native for now; Task 8 adds the scaled sprite.
+            const HCURSOR game_cursor = g_cursor;
+            const HCURSOR shown = game_cursor != nullptr ? game_cursor : arrow;
+            if (shown != input.shown_cursor()) {
+                input.set_shown_cursor(shown);
+                window.refresh_cursor();
+            }
             if (dest != last_dest) {
                 char line[160];
                 std::snprintf(line, sizeof line,
@@ -438,16 +452,7 @@ bool mask_button(int vk) {
     if (!g_active || presenter == nullptr || !core::is_mouse_button(vk)) {
         return false;
     }
-    POINT cursor{};
-    GetCursorPos(&cursor); // our own import: the real position
-    bool in_client = WindowFromPoint(cursor) == presenter;
-    if (in_client) {
-        POINT client = cursor;
-        ScreenToClient(presenter, &client);
-        RECT r{};
-        GetClientRect(presenter, &r);
-        in_client = PtInRect(&r, client) != FALSE;
-    }
+    const bool in_client = platform::cursor_in_client(presenter);
     return !core::report_button(GetForegroundWindow() == presenter, in_client);
 }
 

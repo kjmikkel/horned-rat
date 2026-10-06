@@ -91,6 +91,11 @@ constexpr Field kFields[] = {
                                                               {"stretch", AspectMode::Stretch}}));
      }},
     {"display.vsync", [](Config& c, std::string_view v) { return assign(c.vsync, parse_bool(v)); }},
+    {"display.cursor",
+     [](Config& c, std::string_view v) {
+         return assign(c.cursor, parse_choice<CursorMode>(v, {{"scaled", CursorMode::Scaled},
+                                                              {"native", CursorMode::Native}}));
+     }},
     {"debug.log", [](Config& c, std::string_view v) { return assign(c.log, parse_bool(v)); }},
     {"debug.game_debug",
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
@@ -139,6 +144,7 @@ window_size  = 1280x960    ; initial client size in windowed mode
 scale        = sharp       ; integer | sharp | nearest-fit
 aspect       = 4:3         ; 4:3 | stretch
 vsync        = true
+cursor       = scaled      ; scaled (drawn with the picture) | native (Windows cursor)
 [debug]
 log          = true        ; horned-rat.log
 game_debug   = true        ; capture the game's own OutputDebugStringA output
