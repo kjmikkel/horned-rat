@@ -2,6 +2,7 @@
 
 #include "core/content_rect.h"
 #include "core/input_map.h"
+#include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
 #include "platform/hidden_window.h"
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstdio>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <string>
 #include <thread>
@@ -24,7 +26,6 @@ namespace hr::wing32::a2 {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr core::Size kPresenterSize{640, 480};
 
 std::atomic<HWND> g_glue{nullptr};
 std::atomic<HWND> g_presenter{nullptr};
@@ -122,6 +123,7 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
 class Input final : public platform::PresenterInput {
   public:
     void set_dest(core::Rect dest) { dest_ = dest; }
+    void set_tick(std::function<void()> tick) { tick_ = std::move(tick); }
 
     void on_mouse(UINT msg, WPARAM wparam, POINT client) override {
         const core::Rect content = content_rect();
@@ -130,15 +132,7 @@ class Input final : public platform::PresenterInput {
         g_cursor_x = g.x;
         g_cursor_y = g.y;
         if (g_active && core::classify(msg, wparam) == core::Forward::Mouse) {
-            const HWND target =
-                platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
-            if (msg != WM_MOUSEMOVE) {
-                char line[160];
-                std::snprintf(line, sizeof line,
-                              "diag: presenter msg 0x%04X client (%ld,%ld) -> game (%d,%d) -> %s",
-                              msg, client.x, client.y, g.x, g.y, class_of(target).c_str());
-                platform::log(line);
-            }
+            platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
         }
     }
     void on_key(UINT msg, WPARAM wparam, LPARAM lparam) override {
@@ -147,11 +141,16 @@ class Input final : public platform::PresenterInput {
         }
     }
     void on_close() override { PostMessageA(g_glue, WM_CLOSE, 0, 0); }
-    void on_tick() override {}
+    void on_tick() override {
+        if (tick_) {
+            tick_();
+        }
+    }
     HCURSOR cursor() override { return g_cursor; }
 
   private:
     core::Rect dest_{0, 0, 640, 480};
+    std::function<void()> tick_;
 };
 
 void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
@@ -167,17 +166,32 @@ void presenter_main() {
     platform::log("diag: presenter thread finished (window and device released)");
 }
 
+const char* scale_name(core::ScaleMode scale) {
+    switch (scale) {
+    case core::ScaleMode::Integer:
+        return "integer";
+    case core::ScaleMode::Sharp:
+        return "sharp";
+    case core::ScaleMode::NearestFit:
+        return "nearest-fit";
+    }
+    return "?";
+}
+
 void presenter_body() {
     const HWND glue = g_glue;
     const platform::HiddenState& hidden_state = g_hidden_state;
     try {
         const core::Config& config = settings().config;
         Input input;
-        platform::PresenterWindow window(input, kPresenterSize, "Shadow of the Horned Rat");
+        platform::PresenterWindow window(input, config.window_size, "Shadow of the Horned Rat");
         g_presenter = window.hwnd();
+        if (config.mode == core::DisplayMode::Borderless) {
+            window.set_borderless(true);
+        }
 
         std::string error;
-        auto d3d = platform::D3DPresenter::create(window.hwnd(), kPresenterSize, true, error);
+        auto d3d = platform::D3DPresenter::create(window.hwnd(), window.client_size(), true, error);
         if (!d3d) {
             stop_with_unhide(glue, hidden_state, "presenter disabled, " + error);
             return;
@@ -205,33 +219,52 @@ void presenter_body() {
         platform::log("presenter: running, game window hidden at (" + std::to_string(hidden.left) +
                       "," + std::to_string(hidden.top) + ")");
 
+        const auto filter = config.scale == core::ScaleMode::Sharp
+                                ? platform::D3DPresenter::Filter::Sharp
+                                : platform::D3DPresenter::Filter::Point;
+        std::string failure; // set when the presenter must give up (spec §7)
+        core::Rect last_dest{-1, -1, -1, -1};
         auto last_good = Clock::now();
         auto stats_start = Clock::now();
         double capture_ms = 0.0;
         double present_ms = 0.0;
         int frames = 0;
-        while (!g_stop) {
-            MSG msg;
-            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessageA(&msg);
+
+        // One frame: follow the window size, capture, scale, present. Runs from the loop below
+        // and from on_tick while the user drags the window frame.
+        const auto frame = [&] {
+            if (!failure.empty()) {
+                return;
+            }
+            const core::Size client = window.client_size();
+            if (!d3d->resize(client)) {
+                failure = "swap chain resize failed";
+                return;
             }
             const core::Rect content = find_content_rect(glue);
             store_content_rect(content);
-            const core::Rect dest =
-                core::centered_rect(kPresenterSize, {content.width, content.height});
+            const core::Rect dest = core::dest_rect(client, {content.width, content.height},
+                                                    config.scale, config.aspect);
             input.set_dest(dest);
+            if (dest != last_dest) {
+                char line[160];
+                std::snprintf(line, sizeof line,
+                              "presenter: client %dx%d, scale %s, dest (%d,%d %dx%d)", client.width,
+                              client.height, scale_name(config.scale), dest.x, dest.y, dest.width,
+                              dest.height);
+                platform::log(line);
+                last_dest = dest;
+            }
 
             const auto t0 = Clock::now();
             if (capture.capture(glue, content)) {
                 last_good = t0;
             } else if (t0 - last_good > std::chrono::seconds(2)) {
-                stop_with_unhide(glue, hidden_state, "capture failed for 2 s");
+                failure = "capture failed for 2 s";
                 return;
             }
             const auto t1 = Clock::now();
-            d3d->render(capture.pixels(), capture.size(), dest,
-                        platform::D3DPresenter::Filter::Point);
+            d3d->render(capture.pixels(), capture.size(), dest, filter);
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
@@ -241,18 +274,31 @@ void presenter_body() {
             if (t2 - stats_start >= std::chrono::seconds(10)) {
                 char line[160];
                 std::snprintf(line, sizeof line,
-                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms, "
-                              "foreground %s",
-                              frames, capture_ms / frames, present_ms / frames,
-                              class_of(GetForegroundWindow()).c_str());
+                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms",
+                              frames, capture_ms / frames, present_ms / frames);
                 platform::log(line);
                 stats_start = t2;
                 capture_ms = present_ms = 0.0;
                 frames = 0;
             }
+        };
+        input.set_tick(frame);
+
+        while (!g_stop && failure.empty()) {
+            MSG msg;
+            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+            frame();
             if (!config.vsync) {
                 Sleep(1);
             }
+        }
+        input.set_tick(nullptr);
+        if (!failure.empty()) {
+            stop_with_unhide(glue, hidden_state, failure);
+            return;
         }
         platform::log("presenter: game window destroyed, stopping");
         g_presenter = nullptr;
