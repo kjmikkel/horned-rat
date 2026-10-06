@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 using Catch::Matchers::EndsWith;
@@ -32,4 +33,14 @@ TEST_CASE("module_file_name_from_address names the module containing an address"
     CHECK(hr::platform::module_file_name_from_address(
               reinterpret_cast<const void*>(&some_function_in_this_exe)) == "platform_tests.exe");
     CHECK(hr::platform::module_file_name_from_address(nullptr) == "?");
+}
+
+TEST_CASE("describe_address gives module and offset", "[modules]") {
+    const auto* const address = reinterpret_cast<const char*>(&some_function_in_this_exe);
+    const auto base = reinterpret_cast<const char*>(GetModuleHandleA(nullptr));
+    char expected[64];
+    std::snprintf(expected, sizeof expected, "platform_tests.exe+0x%X",
+                  static_cast<unsigned>(address - base));
+    CHECK(hr::platform::describe_address(address) == expected);
+    CHECK(hr::platform::describe_address(reinterpret_cast<const void*>(0x10)) == "0x00000010");
 }

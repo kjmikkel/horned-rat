@@ -9,6 +9,7 @@
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
+#include "platform/crash_log.h"
 #include "platform/cursor_image.h"
 #include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
@@ -524,6 +525,10 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
     GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
     g_hidden_state = platform::hide_window(window, monitor.rcWork);
     platform::log("presenter: starting for the main window (hidden at creation)");
+    // Diagnostics: the game handles its own crashes by exiting with the exception code, so the
+    // place of an access violation is logged first chance. Never destroyed.
+    static platform::AccessViolationLog crash_log(
+        5, [](const std::string& line) { platform::log("diag: " + line); });
     if (settings().config.message_census) {
         // On the game thread, so the spy sees that thread's windows. Never destroyed: the game's
         // windows live until the process ends.
