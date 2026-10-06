@@ -12,10 +12,12 @@ enum class DisplayMode { Windowed, Borderless };
 enum class ScaleMode { Integer, Sharp, NearestFit };
 enum class AspectMode { Keep4x3, Stretch };
 enum class CursorMode { Scaled, Native };
+enum class Background { Run, Pause };
 
 // Mirrors horned-rat.ini (spec §6.1).
 struct Config {
     bool enabled = true;
+    Background background = Background::Run; // when the presenter is not focused (spec §5.4)
     DisplayMode mode = DisplayMode::Windowed;
     Size window_size{1280, 960};
     ScaleMode scale = ScaleMode::Sharp;

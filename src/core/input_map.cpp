@@ -53,4 +53,18 @@ std::uintptr_t filter_activation(unsigned message, std::uintptr_t wparam) {
     return wparam;
 }
 
+std::uintptr_t game_activation(Background background, unsigned message, std::uintptr_t wparam,
+                               bool app_active) {
+    if (background == Background::Run || app_active) {
+        return filter_activation(message, wparam);
+    }
+    if (message == kWmActivate) {
+        return (wparam & ~std::uintptr_t{0xFFFF}) | kWaInactive;
+    }
+    if (message == kWmActivateApp) {
+        return 0;
+    }
+    return wparam;
+}
+
 } // namespace hr::core

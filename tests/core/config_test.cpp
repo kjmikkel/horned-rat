@@ -16,12 +16,13 @@ TEST_CASE("an empty file gives the defaults without warnings", "[config]") {
 }
 
 TEST_CASE("every key is read", "[config]") {
-    const auto r = load_config("[general]\nenabled = false\n"
+    const auto r = load_config("[general]\nenabled = false\nbackground = pause\n"
                                "[display]\nmode = borderless\nwindow_size = 1920x1440\n"
                                "scale = integer\naspect = stretch\nvsync = no\ncursor = native\n"
                                "[debug]\nlog = off\ngame_debug = 0\nmessage_census = on\n");
     CHECK(r.warnings.empty());
     CHECK_FALSE(r.config.enabled);
+    CHECK(r.config.background == Background::Pause);
     CHECK(r.config.mode == DisplayMode::Borderless);
     CHECK(r.config.window_size == Size{1920, 1440});
     CHECK(r.config.scale == ScaleMode::Integer);
@@ -38,6 +39,14 @@ TEST_CASE("an invalid cursor mode warns and keeps scaled", "[config]") {
     CHECK(r.config.cursor == CursorMode::Scaled);
     REQUIRE(r.warnings.size() == 1);
     CHECK_THAT(r.warnings[0], ContainsSubstring("display.cursor") && ContainsSubstring("huge"));
+}
+
+TEST_CASE("an invalid background mode warns and keeps run", "[config]") {
+    const auto r = load_config("[general]\nbackground = sleep\n");
+    CHECK(r.config.background == Background::Run);
+    REQUIRE(r.warnings.size() == 1);
+    CHECK_THAT(r.warnings[0],
+               ContainsSubstring("general.background") && ContainsSubstring("sleep"));
 }
 
 TEST_CASE("values are case-insensitive", "[config]") {

@@ -70,6 +70,11 @@ struct Field {
 constexpr Field kFields[] = {
     {"general.enabled",
      [](Config& c, std::string_view v) { return assign(c.enabled, parse_bool(v)); }},
+    {"general.background",
+     [](Config& c, std::string_view v) {
+         return assign(c.background, parse_choice<Background>(v, {{"run", Background::Run},
+                                                                  {"pause", Background::Pause}}));
+     }},
     {"display.mode",
      [](Config& c, std::string_view v) {
          return assign(c.mode,
@@ -138,6 +143,7 @@ ConfigLoadResult load_config(std::string_view ini_text) {
 std::string default_config_ini() {
     return R"ini([general]
 enabled      = true        ; false = pure passthrough to the original WinG
+background   = run         ; run (keeps playing when not focused) | pause
 [display]
 mode         = windowed    ; windowed | borderless
 window_size  = 1280x960    ; initial client size in windowed mode

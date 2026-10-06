@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/config.h"
+
 #include <cstdint>
 
 namespace hr::core {
@@ -61,5 +63,11 @@ bool report_button(bool presenter_foreground, bool cursor_in_client);
 
 // WM_ACTIVATE / WM_ACTIVATEAPP parameters rewritten so the game always believes it is active.
 std::uintptr_t filter_activation(unsigned message, std::uintptr_t wparam);
+
+// WM_ACTIVATE / WM_ACTIVATEAPP parameters as the game must see them (spec §5.4). `app_active`:
+// one of our process's windows (the presenter or a game dialog) is in the foreground.
+// Run: always active. Pause: active exactly while app_active.
+std::uintptr_t game_activation(Background background, unsigned message, std::uintptr_t wparam,
+                               bool app_active);
 
 } // namespace hr::core

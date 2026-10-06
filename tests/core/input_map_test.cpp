@@ -76,3 +76,30 @@ TEST_CASE("the game does not translate forwarded key presses while the presenter
     CHECK_FALSE(skip_translate(false, kWmKeyDown));
     CHECK_FALSE(skip_translate(false, kWmSysKeyDown));
 }
+
+TEST_CASE("background = run: the game is always told it is active", "[input_map]") {
+    for (bool app_active : {true, false}) {
+        INFO(app_active);
+        CHECK(game_activation(Background::Run, kWmActivate, kWaInactive, app_active) == kWaActive);
+        CHECK(game_activation(Background::Run, kWmActivateApp, 0, app_active) == 1u);
+        CHECK(game_activation(Background::Run, kWmActivate, 2, app_active) == 2u);
+    }
+}
+
+TEST_CASE("background = pause: the game follows the application's activation", "[input_map]") {
+    // Active: deactivations caused inside our process (a game dialog) are hidden from the game.
+    CHECK(game_activation(Background::Pause, kWmActivate, kWaInactive, true) == kWaActive);
+    CHECK(game_activation(Background::Pause, kWmActivateApp, 0, true) == 1u);
+    CHECK(game_activation(Background::Pause, kWmActivate, 2, true) == 2u); // WA_CLICKACTIVE
+    // Inactive: every activation message says inactive; the minimised flag (high word) stays.
+    CHECK(game_activation(Background::Pause, kWmActivate, kWaActive, false) == kWaInactive);
+    CHECK(game_activation(Background::Pause, kWmActivate, 0x00010002u, false) == 0x00010000u);
+    CHECK(game_activation(Background::Pause, kWmActivateApp, 1, false) == 0u);
+}
+
+TEST_CASE("other messages pass through game_activation unchanged", "[input_map]") {
+    for (auto background : {Background::Run, Background::Pause}) {
+        CHECK(game_activation(background, kWmKeyDown, 7, false) == 7u);
+        CHECK(game_activation(background, kWmKeyDown, 7, true) == 7u);
+    }
+}
