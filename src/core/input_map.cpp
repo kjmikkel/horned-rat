@@ -23,6 +23,12 @@ Forward classify(unsigned message, std::uintptr_t wparam) {
     }
 }
 
+bool toggles_borderless(unsigned message, std::uintptr_t wparam, std::intptr_t lparam) {
+    constexpr std::intptr_t kAltDown = std::intptr_t{1} << 29;
+    constexpr std::intptr_t kWasDown = std::intptr_t{1} << 30;
+    return message == kWmSysKeyDown && wparam == static_cast<std::uintptr_t>(kVkReturn) &&
+           (lparam & kAltDown) != 0 && (lparam & kWasDown) == 0;
+}
 bool is_mouse_button(int vk) {
     return vk == kVkLButton || vk == kVkRButton || vk == kVkMButton || vk == kVkXButton1 ||
            vk == kVkXButton2;
