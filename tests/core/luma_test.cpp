@@ -4,9 +4,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 using Catch::Approx;
+using hr::core::luma_csv_row;
 using hr::core::mean_luma;
 
 TEST_CASE("brightness of uniform pictures", "[luma]") {
@@ -23,4 +25,11 @@ TEST_CASE("brightness is the mean over all pixels and ignores alpha", "[luma]") 
 
 TEST_CASE("an empty picture has zero brightness", "[luma]") {
     CHECK(mean_luma(nullptr, 0, 0) == Approx(0.0));
+}
+
+TEST_CASE("probe rows carry the run and the mode so several runs can share one file", "[luma]") {
+    CHECK(std::string(hr::core::kLumaCsvHeader) == "run,mode,t,luma");
+    CHECK(luma_csv_row("2026-10-06 08:30:00", "a2", 1.23456, 127.5) ==
+          "2026-10-06 08:30:00,a2,1.2346,127.50");
+    CHECK(luma_csv_row("r", "vanilla", 0.0, 0.0) == "r,vanilla,0.0000,0.00");
 }
