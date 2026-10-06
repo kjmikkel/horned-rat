@@ -2,13 +2,16 @@
 // create windows and read the mouse, and from which module. Every hook calls the original.
 #include "wing32/hooks.h"
 
+#include "core/audio.h"
 #include "core/game_modules.h"
+#include "core/input_map.h"
 #include "core/sample_limiter.h"
 #include "platform/dc_info.h"
 #include "platform/guard.h"
 #include "platform/iat_hook.h"
 #include "platform/log.h"
 #include "platform/modules.h"
+#include "wing32/a2.h"
 #include "wing32/runtime.h"
 
 #include <intrin.h>
@@ -19,6 +22,13 @@
 #include <mutex>
 #include <string>
 #include <type_traits>
+
+#include <mmsystem.h>
+
+#include <dsound.h>
+
+static_assert(hr::core::kDsbcapsPrimaryBuffer == DSBCAPS_PRIMARYBUFFER);
+static_assert(hr::core::kDsbcapsGlobalFocus == DSBCAPS_GLOBALFOCUS);
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -93,6 +103,11 @@ struct Originals {
     decltype(&::GetDC) GetDC;
     decltype(&::GetWindowDC) GetWindowDC;
     decltype(&::BeginPaint) BeginPaint;
+    decltype(&::GetAsyncKeyState) GetAsyncKeyState;
+    decltype(&::SetCursor) SetCursor;
+    decltype(&::MessageBoxA) MessageBoxA;
+    decltype(&::ExitProcess) ExitProcess;
+    HRESULT(WINAPI* DirectSoundCreate)(LPCGUID, LPDIRECTSOUND*, LPUNKNOWN);
 };
 
 const Originals& originals() {
@@ -123,9 +138,125 @@ const Originals& originals() {
         get(user32, "GetDC", r.GetDC);
         get(user32, "GetWindowDC", r.GetWindowDC);
         get(user32, "BeginPaint", r.BeginPaint);
+        get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
+        get(user32, "SetCursor", r.SetCursor);
+        get(user32, "MessageBoxA", r.MessageBoxA);
+        get(kernel32, "ExitProcess", r.ExitProcess);
+        if (const HMODULE dsound = GetModuleHandleW(L"dsound.dll")) {
+            get(dsound, "DirectSoundCreate", r.DirectSoundCreate);
+        }
         return r;
     }();
     return o;
+}
+
+// ---- DSOUND (diagnostics) ----
+
+using SetCooperativeLevel_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, HWND, DWORD);
+using CreateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPCDSBUFFERDESC,
+                                                        LPDIRECTSOUNDBUFFER*, LPUNKNOWN);
+std::atomic<SetCooperativeLevel_t> g_set_cooperative_level{nullptr};
+std::atomic<CreateSoundBuffer_t> g_create_sound_buffer{nullptr};
+std::atomic<std::uint64_t> g_sound_buffers{0};
+
+std::string window_class(HWND window) {
+    char name[64] = {};
+    if (window != nullptr) {
+        GetClassNameA(window, name, sizeof name);
+    }
+    return name;
+}
+
+HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND window, DWORD level) {
+    platform::guarded(
+        "SetCooperativeLevel",
+        [&] {
+            platform::log("diag: DirectSound SetCooperativeLevel hwnd=" + hex(window) + " class '" +
+                          window_class(window) + "' level=" + std::to_string(level));
+        },
+        [] {});
+    return g_set_cooperative_level.load()(self, window, level);
+}
+
+HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFERDESC desc,
+                                                 LPDIRECTSOUNDBUFFER* buffer, LPUNKNOWN outer) {
+    platform::guarded(
+        "CreateSoundBuffer",
+        [&] {
+            if (const auto n = sample(g_sound_buffers); n && desc != nullptr) {
+                char flags[32];
+                std::snprintf(flags, sizeof flags, "0x%08lx",
+                              static_cast<unsigned long>(desc->dwFlags));
+                platform::log(std::string("diag: DirectSound CreateSoundBuffer #") +
+                              std::to_string(n) + " flags=" + flags +
+                              ((desc->dwFlags & DSBCAPS_GLOBALFOCUS) ? " GLOBALFOCUS" : "") +
+                              ((desc->dwFlags & DSBCAPS_STICKYFOCUS) ? " STICKYFOCUS" : "") +
+                              ((desc->dwFlags & DSBCAPS_PRIMARYBUFFER) ? " PRIMARY" : ""));
+            }
+        },
+        [] {});
+    if (desc == nullptr) {
+        return g_create_sound_buffer.load()(self, desc, buffer, outer);
+    }
+    DSBUFFERDESC copy = *desc;
+    copy.dwFlags = core::with_global_focus(copy.dwFlags);
+    return g_create_sound_buffer.load()(self, &copy, buffer, outer);
+}
+
+void patch_vtable_slot(void** vtable, int index, void* replacement) {
+    DWORD old = 0;
+    if (VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old)) {
+        vtable[index] = replacement;
+        VirtualProtect(&vtable[index], sizeof(void*), old, &old);
+    }
+}
+
+HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKNOWN outer) {
+    const void* caller = _ReturnAddress();
+    const HRESULT result = originals().DirectSoundCreate(guid, sound, outer);
+    platform::guarded(
+        "DirectSoundCreate",
+        [&] {
+            char text[16];
+            std::snprintf(text, sizeof text, "0x%08lx", static_cast<unsigned long>(result));
+            platform::log(std::string("diag: DirectSoundCreate from ") +
+                          platform::module_file_name_from_address(caller) + " -> " + text);
+            if (SUCCEEDED(result) && sound != nullptr && *sound != nullptr) {
+                auto** const vtable = *reinterpret_cast<void***>(*sound);
+                // IDirectSound: 3 = CreateSoundBuffer, 6 = SetCooperativeLevel.
+                if (vtable[3] != reinterpret_cast<void*>(&hook_CreateSoundBuffer)) {
+                    g_create_sound_buffer = reinterpret_cast<CreateSoundBuffer_t>(vtable[3]);
+                    patch_vtable_slot(vtable, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
+                }
+                if (vtable[6] != reinterpret_cast<void*>(&hook_SetCooperativeLevel)) {
+                    g_set_cooperative_level = reinterpret_cast<SetCooperativeLevel_t>(vtable[6]);
+                    patch_vtable_slot(vtable, 6,
+                                      reinterpret_cast<void*>(&hook_SetCooperativeLevel));
+                }
+            }
+        },
+        [] {});
+    return result;
+}
+
+// ---- Dialogs and exit ----
+
+int WINAPI hook_MessageBoxA(HWND owner, LPCSTR text, LPCSTR caption, UINT type) {
+    const HWND presenter = a2::active() ? a2::presenter_window() : nullptr;
+    platform::guarded(
+        "MessageBoxA",
+        [&] {
+            platform::log(std::string("MessageBoxA owner ") + hex(owner) +
+                          (presenter != nullptr ? " -> presenter" : ""));
+        },
+        [] {});
+    // Owned by the presenter, the box appears on top of it and disables it while open (A2.1).
+    return originals().MessageBoxA(presenter != nullptr ? presenter : owner, text, caption, type);
+}
+
+void WINAPI hook_ExitProcess(UINT code) {
+    platform::log("diag: ExitProcess(" + std::to_string(code) + ")");
+    originals().ExitProcess(code);
 }
 
 // ---- KERNEL32 ----
@@ -297,6 +428,9 @@ HWND WINAPI hook_CreateWindowExA(DWORD ex_style, LPCSTR class_name, LPCSTR windo
                           platform::module_file_name_from_address(caller) + ": class '" + cls +
                           "' title '" + (window_name ? window_name : "") + "' " + styles + " " +
                           rect(x, y, w, h) + " parent=" + hex(parent) + " -> " + hex(result));
+            if (result != nullptr) {
+                a2::on_window_created(result, parent, style);
+            }
         },
         [] {});
     SetLastError(error);
@@ -321,17 +455,44 @@ BOOL WINAPI hook_SetWindowPos(HWND window, HWND after, int x, int y, int w, int 
 
 BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     const void* caller = _ReturnAddress();
-    const BOOL result = originals().GetCursorPos(point);
+    BOOL result = TRUE;
+    if (point != nullptr && a2::active()) {
+        platform::guarded(
+            "GetCursorPos", [&] { a2::fake_cursor_pos(*point); },
+            [&] { result = originals().GetCursorPos(point); });
+    } else {
+        result = originals().GetCursorPos(point);
+    }
     platform::guarded(
-        "GetCursorPos",
+        "GetCursorPos log",
         [&] {
             if (const auto n = sample(g_counters.get_cursor_pos); n && point) {
                 trace("GetCursorPos", n, caller,
-                      "-> (" + std::to_string(point->x) + "," + std::to_string(point->y) + ")");
+                      "-> (" + std::to_string(point->x) + "," + std::to_string(point->y) + ")" +
+                          (a2::active() ? " virtual" : ""));
             }
         },
         [] {});
     return result;
+}
+
+SHORT WINAPI hook_GetAsyncKeyState(int vk) {
+    const SHORT state = originals().GetAsyncKeyState(vk);
+    return platform::guarded(
+        "GetAsyncKeyState",
+        [&]() -> SHORT {
+            const bool masked = a2::mask_button(vk);
+            if (a2::active() && core::is_mouse_button(vk)) {
+                a2::note_button(vk, (state & 0x8000) != 0, masked);
+            }
+            return masked ? SHORT{0} : state;
+        },
+        [&] { return state; });
+}
+
+HCURSOR WINAPI hook_SetCursor(HCURSOR cursor) {
+    platform::guarded("SetCursor", [&] { a2::set_game_cursor(cursor); }, [] {});
+    return originals().SetCursor(cursor);
 }
 
 BOOL WINAPI hook_SetCursorPos(int x, int y) {
@@ -471,6 +632,11 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "GetDC", reinterpret_cast<void*>(&hook_GetDC)},
     {"USER32.dll", "GetWindowDC", reinterpret_cast<void*>(&hook_GetWindowDC)},
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
+    {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
+    {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
+    {"DSOUND.dll", "DirectSoundCreate", reinterpret_cast<void*>(&hook_DirectSoundCreate)},
+    {"USER32.dll", "MessageBoxA", reinterpret_cast<void*>(&hook_MessageBoxA)},
+    {"KERNEL32.dll", "ExitProcess", reinterpret_cast<void*>(&hook_ExitProcess)},
 };
 
 void log_wing_blit(const char* function, DcCounters& counters, const void* caller, HDC dest, int x,

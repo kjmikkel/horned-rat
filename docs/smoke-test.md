@@ -19,4 +19,17 @@ result of each item in the PR or release notes. Never commit game logs or screen
 - [ ] `horned-rat.log` exists in `WARFB\` and has no `exception` lines.
 - [ ] Uninstall: `./tools/install.ps1 -GameDir '<GOG game folder>' -Uninstall`; the game still starts.
 
+### A2 presenter (from A2.1)
+- [ ] The game appears in a "Shadow of the Horned Rat" window; the original game window is not visible.
+- [ ] Menu hover and clicks work; the "select mission" text and book buttons react.
+- [ ] Typing a save-game name works (Edit control receives keys and shows the caret).
+- [ ] Battle: selecting, moving and attacking units with the mouse works; the map scrolls.
+- [ ] The intro/briefing videos play inside the presenter.
+- [ ] Clicking on the desktop or another window does not click inside the game.
+- [ ] Dragging the presenter partly off-screen: the picture keeps updating everywhere.
+- [ ] Other windows stay clickable where the hidden game window lies (it is click-through).
+- [ ] Closing the presenter quits the game normally.
+- [ ] Panic switch `enabled = false`: the game runs as vanilla (no presenter).
+- [ ] `horned-rat.log` shows `presenter: running`, 10-second performance lines, and no `exception`.
+
 The log item applies from A1 on. Later milestones add items here (window resizing, scale modes, Alt+Enter, ...).
