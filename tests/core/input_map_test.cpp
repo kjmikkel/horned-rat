@@ -103,3 +103,12 @@ TEST_CASE("other messages pass through game_activation unchanged", "[input_map]"
         CHECK(game_activation(background, kWmKeyDown, 7, true) == 7u);
     }
 }
+
+TEST_CASE("the game is held only when paused, unfocused and told so", "[input_map]") {
+    CHECK(hold_game(Background::Pause, true, false, true, false));
+    CHECK_FALSE(hold_game(Background::Run, true, false, true, false));    // run mode
+    CHECK_FALSE(hold_game(Background::Pause, false, false, true, false)); // presenter gone
+    CHECK_FALSE(hold_game(Background::Pause, true, true, true, false));   // focused again
+    CHECK_FALSE(hold_game(Background::Pause, true, false, false, false)); // not yet told
+    CHECK_FALSE(hold_game(Background::Pause, true, false, true, true));   // closing
+}

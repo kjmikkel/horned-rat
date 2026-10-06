@@ -67,4 +67,10 @@ std::uintptr_t game_activation(Background background, unsigned message, std::uin
     return wparam;
 }
 
+bool hold_game(Background background, bool presenter_active, bool app_active, bool told_inactive,
+               bool closing) {
+    return background == Background::Pause && presenter_active && !app_active && told_inactive &&
+           !closing;
+}
+
 } // namespace hr::core

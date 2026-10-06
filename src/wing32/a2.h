@@ -34,6 +34,15 @@ bool owns_display();
 // gives up, the last one is applied so the game gets the screen it asked for.
 void defer_display_mode(const DEVMODEA* mode, DWORD flags);
 
+// background = pause: called by the game's message loop (PeekMessageA / GetMessageA). On the
+// game thread, holds it while the presenter is not focused (core::hold_game), still handling
+// messages sent to it.
+void hold_while_paused();
+
+// The game's clocks with the time the game was held taken out (core::PauseClock).
+enum class GameClock { TickCount, Multimedia };
+DWORD game_time(GameClock clock, DWORD real);
+
 // Diagnostics: logs when the physical state or the masking of a mouse button changes.
 void note_button(int vk, bool physically_down, bool masked);
 

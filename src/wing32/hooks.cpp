@@ -110,6 +110,9 @@ struct Originals {
     decltype(&::BeginPaint) BeginPaint;
     decltype(&::GetAsyncKeyState) GetAsyncKeyState;
     decltype(&::TranslateMessage) TranslateMessage;
+    decltype(&::PeekMessageA) PeekMessageA;
+    decltype(&::GetMessageA) GetMessageA;
+    decltype(&::GetTickCount) GetTickCount;
     decltype(&::SetCursor) SetCursor;
     decltype(&::LoadCursorA) LoadCursorA;
     decltype(&::SetClassLongA) SetClassLongA;
@@ -152,6 +155,9 @@ const Originals& originals() {
         get(user32, "BeginPaint", r.BeginPaint);
         get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
         get(user32, "TranslateMessage", r.TranslateMessage);
+        get(user32, "PeekMessageA", r.PeekMessageA);
+        get(user32, "GetMessageA", r.GetMessageA);
+        get(kernel32, "GetTickCount", r.GetTickCount);
         get(user32, "SetCursor", r.SetCursor);
         get(user32, "LoadCursorA", r.LoadCursorA);
         get(user32, "SetClassLongA", r.SetClassLongA);
@@ -561,6 +567,33 @@ BOOL WINAPI hook_TranslateMessage(const MSG* msg) {
     return skip ? FALSE : originals().TranslateMessage(msg);
 }
 
+// background = pause (A2.4): the game's message loop is where its thread is held while the
+// presenter is not focused.
+BOOL WINAPI hook_PeekMessageA(LPMSG msg, HWND window, UINT first, UINT last, UINT remove) {
+    platform::guarded("PeekMessageA", [] { a2::hold_while_paused(); }, [] {});
+    return originals().PeekMessageA(msg, window, first, last, remove);
+}
+
+BOOL WINAPI hook_GetMessageA(LPMSG msg, HWND window, UINT first, UINT last) {
+    platform::guarded("GetMessageA", [] { a2::hold_while_paused(); }, [] {});
+    return originals().GetMessageA(msg, window, first, last);
+}
+
+// The game's clocks stand still while it is held, so it does not catch up on return.
+DWORD WINAPI hook_GetTickCount() {
+    const DWORD real = originals().GetTickCount();
+    return platform::guarded(
+        "GetTickCount", [&] { return a2::game_time(a2::GameClock::TickCount, real); },
+        [&] { return real; });
+}
+
+DWORD WINAPI hook_timeGetTime() {
+    const DWORD real = timeGetTime(); // wing32's own import: not hooked
+    return platform::guarded(
+        "timeGetTime", [&] { return a2::game_time(a2::GameClock::Multimedia, real); },
+        [&] { return real; });
+}
+
 SHORT WINAPI hook_GetAsyncKeyState(int vk) {
     const SHORT state = originals().GetAsyncKeyState(vk);
     return platform::guarded(
@@ -829,6 +862,10 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
     {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
     {"USER32.dll", "TranslateMessage", reinterpret_cast<void*>(&hook_TranslateMessage)},
+    {"USER32.dll", "PeekMessageA", reinterpret_cast<void*>(&hook_PeekMessageA)},
+    {"USER32.dll", "GetMessageA", reinterpret_cast<void*>(&hook_GetMessageA)},
+    {"KERNEL32.dll", "GetTickCount", reinterpret_cast<void*>(&hook_GetTickCount)},
+    {"WINMM.dll", "timeGetTime", reinterpret_cast<void*>(&hook_timeGetTime)},
     {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
     {"USER32.dll", "LoadCursorA", reinterpret_cast<void*>(&hook_LoadCursorA)},
     {"USER32.dll", "SetClassLongA", reinterpret_cast<void*>(&hook_SetClassLongA)},
