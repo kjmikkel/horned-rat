@@ -6,6 +6,7 @@
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
+#include "platform/cursor_image.h"
 #include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
 #include "platform/log.h"
@@ -22,6 +23,7 @@
 #include <cstdio>
 #include <exception>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -297,6 +299,31 @@ void presenter_body() {
         platform::log(std::string("presenter: cursor ") +
                       (config.cursor == core::CursorMode::Scaled ? "scaled" : "native"));
 
+        // Cursor sprites by handle (spec §5.3); nullopt = could not be converted, shown natively.
+        struct CursorSprite {
+            core::Size size;
+            core::Point hotspot;
+        };
+        std::map<HCURSOR, std::optional<CursorSprite>> sprites;
+        const auto sprite_for = [&](HCURSOR cursor) -> const std::optional<CursorSprite>& {
+            auto it = sprites.find(cursor);
+            if (it == sprites.end()) {
+                std::optional<CursorSprite> entry;
+                const auto image = platform::cursor_image(cursor);
+                if (image && d3d->add_sprite(reinterpret_cast<std::uintptr_t>(cursor),
+                                             image->pixels.data(), image->size)) {
+                    entry = CursorSprite{image->size, image->hotspot};
+                }
+                char line[128];
+                std::snprintf(line, sizeof line, "presenter: cursor 0x%p %s",
+                              static_cast<void*>(cursor),
+                              entry ? "drawn as a sprite" : "cannot be drawn, shown natively");
+                platform::log(line);
+                it = sprites.emplace(cursor, entry).first;
+            }
+            return it->second;
+        };
+
         const auto frame = [&] {
             if (!failure.empty()) {
                 return;
@@ -311,9 +338,16 @@ void presenter_body() {
             const core::Rect dest = core::dest_rect(client, {content.width, content.height},
                                                     config.scale, config.aspect);
             input.set_dest(dest);
-            // Native for now; Task 8 adds the scaled sprite.
             const HCURSOR game_cursor = g_cursor;
-            const HCURSOR shown = game_cursor != nullptr ? game_cursor : arrow;
+            const CursorSprite* sprite = nullptr;
+            if (config.cursor == core::CursorMode::Scaled && game_cursor != nullptr) {
+                if (const auto& entry = sprite_for(game_cursor)) {
+                    sprite = &*entry;
+                }
+            }
+            // While a sprite is drawn the system cursor is hidden over the client area.
+            const HCURSOR shown =
+                sprite != nullptr ? nullptr : (game_cursor != nullptr ? game_cursor : arrow);
             if (shown != input.shown_cursor()) {
                 input.set_shown_cursor(shown);
                 window.refresh_cursor();
@@ -337,6 +371,12 @@ void presenter_body() {
             }
             const auto t1 = Clock::now();
             d3d->render(capture.pixels(), capture.size(), dest, filter);
+            if (sprite != nullptr && platform::cursor_in_client(window.hwnd())) {
+                d3d->draw_sprite(reinterpret_cast<std::uintptr_t>(game_cursor),
+                                 core::cursor_rect({g_cursor_x.load(), g_cursor_y.load()},
+                                                   {content.width, content.height}, dest,
+                                                   sprite->size, sprite->hotspot));
+            }
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
