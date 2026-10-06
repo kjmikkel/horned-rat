@@ -28,7 +28,10 @@ result of each item in the PR or release notes. Never commit game logs or screen
 - [ ] Clicking on the desktop or another window does not click inside the game.
 - [ ] Dragging the presenter partly off-screen: the picture keeps updating everywhere.
 - [ ] Other windows stay clickable where the hidden game window lies (it is click-through).
-- [ ] Closing the presenter quits the game normally.
+- [ ] No flash of the original game window at start-up.
+- [ ] Sound effects and speech play (not only music).
+- [ ] Game dialogs (e.g. the exit question) appear on top of the presenter and can be answered.
+- [ ] Closing the presenter quits the game normally; `WHSHR.EXE` is gone from Task Manager.
 - [ ] Panic switch `enabled = false`: the game runs as vanilla (no presenter).
 - [ ] `horned-rat.log` shows `presenter: running`, 10-second performance lines, and no `exception`.
 
