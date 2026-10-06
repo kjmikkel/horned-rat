@@ -34,8 +34,18 @@ TEST_CASE("an empty destination maps everything to the origin", "[viewport]") {
     CHECK(to_content({10, 10}, Rect{0, 0, 0, 0}, {640, 480}) == Point{0, 0});
 }
 
-TEST_CASE("the fake cursor is the parked window's client origin plus content offset and point",
+TEST_CASE("the fake cursor is the hidden window's client origin plus content offset and point",
           "[viewport]") {
     CHECK(fake_cursor_screen({-32000, -32000}, Rect{5, 5, 640, 480}, {10, 20}) ==
           Point{-31985, -31975});
+}
+
+TEST_CASE("keep_inside moves a window as little as possible to fit an area", "[viewport]") {
+    const Rect area{0, 0, 1920, 1040};
+    CHECK(keep_inside({100, 100, 656, 520}, area) == Point{100, 100});
+    CHECK(keep_inside({-150, 100, 656, 520}, area) == Point{0, 100});
+    CHECK(keep_inside({1800, 900, 656, 520}, area) == Point{1264, 520});
+    CHECK(keep_inside({-32000, -32000, 656, 520}, area) == Point{0, 0});
+    CHECK(keep_inside({50, 50, 4000, 3000}, area) == Point{0, 0});
+    CHECK(keep_inside({1950, 10, 100, 100}, Rect{1920, 0, 1920, 1080}) == Point{1950, 10});
 }

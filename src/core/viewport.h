@@ -13,7 +13,11 @@ Rect centered_rect(Size client, Size content);
 Point to_content(Point client_point, Rect dest, Size content);
 
 // The screen position GetCursorPos must report so that the game's own ScreenToClient on its
-// (parked) main window yields `content_point` inside `content_rect`.
+// (hidden) main window yields `content_point` inside `content_rect`.
 Point fake_cursor_screen(Point glue_client_origin, Rect content_rect, Point content_point);
+
+// Top-left position that puts `window` fully inside `area`, moving it as little as possible; a
+// window larger than the area is aligned to the area's top-left.
+Point keep_inside(Rect window, Rect area);
 
 } // namespace hr::core

@@ -11,7 +11,6 @@ namespace hr::core {
 enum class DisplayMode { Windowed, Borderless };
 enum class ScaleMode { Integer, Sharp, NearestFit };
 enum class AspectMode { Keep4x3, Stretch };
-enum class ParkMode { Offscreen, Underneath };
 
 // Mirrors horned-rat.ini (spec §6.1).
 struct Config {
@@ -21,7 +20,6 @@ struct Config {
     ScaleMode scale = ScaleMode::Sharp;
     AspectMode aspect = AspectMode::Keep4x3;
     bool vsync = true;
-    ParkMode park = ParkMode::Offscreen;
     bool log = true;
     bool game_debug = true;
 

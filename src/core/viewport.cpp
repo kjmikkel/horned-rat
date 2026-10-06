@@ -34,4 +34,15 @@ Point fake_cursor_screen(Point glue_client_origin, Rect content_rect, Point cont
             glue_client_origin.y + content_rect.y + content_point.y};
 }
 
+Point keep_inside(Rect window, Rect area) {
+    const auto axis = [](int pos, int size, int start, int length) {
+        if (size >= length) {
+            return start;
+        }
+        return std::clamp(pos, start, start + length - size);
+    };
+    return {axis(window.x, window.width, area.x, area.width),
+            axis(window.y, window.height, area.y, area.height)};
+}
+
 } // namespace hr::core

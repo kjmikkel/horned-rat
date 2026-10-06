@@ -80,13 +80,3 @@ TEST_CASE("the default file parses back to the defaults", "[config]") {
     CHECK(r.warnings.empty());
     CHECK(r.config == Config{});
 }
-
-TEST_CASE("the park mode is read and defaults to off-screen", "[config]") {
-    CHECK(Config{}.park == ParkMode::Offscreen);
-    CHECK(load_config("[display]\npark = underneath\n").config.park == ParkMode::Underneath);
-    CHECK(load_config("[display]\npark = OffScreen\n").config.park == ParkMode::Offscreen);
-    const auto bad = load_config("[display]\npark = sideways\n");
-    CHECK(bad.config.park == ParkMode::Offscreen);
-    REQUIRE(bad.warnings.size() == 1);
-    CHECK_THAT(bad.warnings[0], ContainsSubstring("display.park"));
-}
