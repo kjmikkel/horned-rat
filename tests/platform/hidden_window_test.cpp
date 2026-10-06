@@ -71,6 +71,30 @@ TEST_CASE("a hidden window under another window still delivers live drawing to t
     DestroyWindow(window);
 }
 
+TEST_CASE("a window hidden before it is first shown stays invisible and capturable once shown",
+          "[hidden_window]") {
+    // The game shows its main window after CreateWindowExA returns; A2 hides it in between.
+    const HWND window = hr::test::make_window(100, 100, 200, 150, nullptr, false);
+    REQUIRE_FALSE(IsWindowVisible(window));
+    const HiddenState state = hide_window(window, work_area());
+    ShowWindow(window, SW_SHOWNORMAL);
+    UpdateWindow(window);
+    hr::test::pump();
+
+    CHECK(IsWindowVisible(window));
+    BYTE alpha = 255;
+    DWORD flags = 0;
+    REQUIRE(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags));
+    CHECK(alpha == 0);
+    WindowCapture capture;
+    REQUIRE(capture.capture(window, {0, 0, 200, 150}));
+    CHECK((capture.pixels()[35 * 200 + 25] & 0xFFFFFF) == 0xFF0000u);
+
+    unhide_window(window, state);
+    CHECK((GetWindowLongPtrA(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0);
+    DestroyWindow(window);
+}
+
 TEST_CASE("unhide of a window that was never hidden does nothing", "[hidden_window]") {
     const HWND window = hr::test::make_window(100, 100, 50, 50);
     unhide_window(window, HiddenState{});

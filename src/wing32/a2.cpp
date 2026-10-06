@@ -40,6 +40,8 @@ std::atomic<int> g_content_w{640};
 std::atomic<int> g_content_h{480};
 std::atomic<int> g_hidden_x{0}; // hidden position, enforced while active
 std::atomic<int> g_hidden_y{0};
+// Written on the game thread before the presenter thread starts (thread start orders the access).
+platform::HiddenState g_hidden_state;
 
 std::string class_of(HWND window) {
     if (window == nullptr) {
@@ -166,7 +168,7 @@ void presenter_main() {
 
 void presenter_body() {
     const HWND glue = g_glue;
-    platform::HiddenState hidden_state;
+    const platform::HiddenState& hidden_state = g_hidden_state;
     try {
         const core::Config& config = settings().config;
         Input input;
@@ -176,7 +178,7 @@ void presenter_body() {
         std::string error;
         auto d3d = platform::D3DPresenter::create(window.hwnd(), kPresenterSize, true, error);
         if (!d3d) {
-            platform::log("presenter: disabled, " + error);
+            stop_with_unhide(glue, hidden_state, "presenter disabled, " + error);
             return;
         }
         platform::log(
@@ -186,17 +188,13 @@ void presenter_body() {
         platform::WindowCapture capture;
         store_content_rect(find_content_rect(glue));
         if (!capture.capture(glue, content_rect())) {
-            platform::log("presenter: disabled, first capture failed");
+            stop_with_unhide(glue, hidden_state, "presenter disabled, first capture failed");
             return;
         }
 
         // Never destroyed: the game thread may be inside it at any time until the process ends.
         static platform::Subclass subclass(glue, &glue_proc);
 
-        MONITORINFO monitor{};
-        monitor.cbSize = sizeof monitor;
-        GetMonitorInfoA(MonitorFromWindow(glue, MONITOR_DEFAULTTOPRIMARY), &monitor);
-        hidden_state = platform::hide_window(glue, monitor.rcWork);
         RECT hidden{};
         GetWindowRect(glue, &hidden);
         g_hidden_x = hidden.left;
@@ -280,7 +278,13 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
         return;
     }
     g_glue = window;
-    platform::log("presenter: starting for the main window");
+    // Hidden here, on the game thread before the game first shows the window, so it never flashes
+    // on screen while the presenter starts up. Every presenter failure unhides it again.
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof monitor;
+    GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    g_hidden_state = platform::hide_window(window, monitor.rcWork);
+    platform::log("presenter: starting for the main window (hidden at creation)");
     std::thread(presenter_main).detach();
 }
 

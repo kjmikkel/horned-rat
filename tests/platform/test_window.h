@@ -37,9 +37,10 @@ inline LRESULT CALLBACK recording_proc(HWND window, UINT msg, WPARAM wparam, LPA
     return DefWindowProcA(window, msg, wparam, lparam);
 }
 
-// A visible test window: top-level popup when `parent` is null, else a child. Paints black with
-// a red 10×10 square at client (20,30).
-inline HWND make_window(int x, int y, int width, int height, HWND parent = nullptr) {
+// A test window, visible unless `visible` is false: top-level popup when `parent` is null, else a
+// child. Paints black with a red 10×10 square at client (20,30).
+inline HWND make_window(int x, int y, int width, int height, HWND parent = nullptr,
+                        bool visible = true) {
     static const bool registered = [] {
         WNDCLASSA wc{};
         wc.lpfnWndProc = recording_proc;
@@ -49,7 +50,8 @@ inline HWND make_window(int x, int y, int width, int height, HWND parent = nullp
         return RegisterClassA(&wc) != 0;
     }();
     (void)registered;
-    const DWORD style = parent != nullptr ? (WS_CHILD | WS_VISIBLE) : (WS_POPUP | WS_VISIBLE);
+    const DWORD style =
+        (parent != nullptr ? WS_CHILD : WS_POPUP) | (visible ? WS_VISIBLE : DWORD{0});
     const HWND window = CreateWindowExA(0, "HrRecordingWindow", "", style, x, y, width, height,
                                         parent, nullptr, GetModuleHandleA(nullptr), nullptr);
     UpdateWindow(window);
