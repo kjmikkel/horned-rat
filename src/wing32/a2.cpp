@@ -1,6 +1,7 @@
 #include "wing32/a2.h"
 
 #include "core/content_rect.h"
+#include "core/cursor_math.h"
 #include "core/input_map.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
@@ -17,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <functional>
@@ -37,6 +39,7 @@ std::atomic<bool> g_started{false};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_stop{false};
 std::atomic<HCURSOR> g_cursor{nullptr};
+std::atomic<std::uint32_t> g_cursor_sets{0}; // SetCursor calls by the game so far
 std::atomic<int> g_cursor_x{0};
 std::atomic<int> g_cursor_y{0};
 std::atomic<int> g_content_x{0};
@@ -139,6 +142,23 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
     return CallWindowProcA(original, window, msg, wparam, lparam);
 }
 
+// Runs on the presenter thread once the game thread has handled a forwarded WM_SETCURSOR
+// (platform::send_set_cursor; `sets_before` = g_cursor_sets when it was sent).
+void CALLBACK on_set_cursor_done(HWND window, UINT, ULONG_PTR sets_before, LRESULT) {
+    const bool game_set = g_cursor_sets.load() != static_cast<std::uint32_t>(sets_before);
+    const auto class_cursor = static_cast<std::uintptr_t>(GetClassLongPtrA(window, GCLP_HCURSOR));
+    const auto chosen = core::cursor_after_set_cursor(
+        game_set, reinterpret_cast<std::uintptr_t>(g_cursor.load()), class_cursor);
+    const auto next = reinterpret_cast<HCURSOR>(chosen);
+    if (g_cursor.exchange(next) != next) {
+        char line[160];
+        std::snprintf(line, sizeof line, "diag: cursor 0x%p (%s '%s')", static_cast<void*>(next),
+                      game_set ? "set by the game in" : "class cursor of",
+                      class_of(window).c_str());
+        platform::log(line);
+    }
+}
+
 class Input final : public platform::PresenterInput {
   public:
     void set_dest(core::Rect dest) { dest_ = dest; }
@@ -152,7 +172,12 @@ class Input final : public platform::PresenterInput {
         g_cursor_x = g.x;
         g_cursor_y = g.y;
         if (g_active && core::classify(msg, wparam) == core::Forward::Mouse) {
-            platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
+            const POINT root{content.x + g.x, content.y + g.y};
+            if (msg != WM_MOUSEWHEEL) {
+                platform::send_set_cursor(g_glue, root, msg, &on_set_cursor_done,
+                                          g_cursor_sets.load());
+            }
+            platform::post_mouse(g_glue, msg, wparam, root);
         }
     }
     void on_key(UINT msg, WPARAM wparam, LPARAM lparam) override {
@@ -426,7 +451,10 @@ bool mask_button(int vk) {
     return !core::report_button(GetForegroundWindow() == presenter, in_client);
 }
 
-void set_game_cursor(HCURSOR cursor) { g_cursor = cursor; }
+void set_game_cursor(HCURSOR cursor) {
+    g_cursor = cursor;
+    ++g_cursor_sets;
+}
 
 void note_button(int vk, bool physically_down, bool masked) {
     static std::atomic<int> last[8]{};

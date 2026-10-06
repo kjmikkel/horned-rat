@@ -67,6 +67,19 @@ HWND post_mouse(HWND root, UINT msg, WPARAM wparam, POINT root_client) {
     return hit.window;
 }
 
+HWND send_set_cursor(HWND root, POINT root_client, UINT mouse_msg, SENDASYNCPROC done,
+                     ULONG_PTR data) {
+    if (thread_window(root, true) != nullptr) {
+        return nullptr;
+    }
+    const HWND target = deepest_child_at(root, root_client).window;
+    if (!SendMessageCallbackA(target, WM_SETCURSOR, reinterpret_cast<WPARAM>(target),
+                              MAKELPARAM(HTCLIENT, mouse_msg), done, data)) {
+        return nullptr;
+    }
+    return target;
+}
+
 void post_key(HWND root, UINT msg, WPARAM wparam, LPARAM lparam) {
     const HWND focus = thread_window(root, false);
     PostMessageA(focus != nullptr ? focus : root, msg, wparam, lparam);

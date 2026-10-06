@@ -88,3 +88,41 @@ TEST_CASE("children are found and reached when the root window is hidden", "[chi
     CHECK(got(tree.b, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(5, 5)));
     unhide_window(tree.root, hidden);
 }
+
+namespace {
+int g_done_calls = 0;
+HWND g_done_window = nullptr;
+ULONG_PTR g_done_data = 0;
+
+void CALLBACK record_done(HWND window, UINT msg, ULONG_PTR data, LRESULT) {
+    CHECK(msg == WM_SETCURSOR);
+    ++g_done_calls;
+    g_done_window = window;
+    g_done_data = data;
+}
+} // namespace
+
+TEST_CASE("send_set_cursor asks the child under the point, as Windows does before a click",
+          "[child_input]") {
+    Tree tree;
+    g_done_calls = 0;
+    // (65,55) in root is inside b: a starts at (50,40), b at (10,10) in a.
+    const HWND target = send_set_cursor(tree.root, POINT{65, 55}, WM_LBUTTONDOWN, &record_done, 42);
+    CHECK(target == tree.b);
+    CHECK(got(tree.b, WM_SETCURSOR, reinterpret_cast<WPARAM>(tree.b),
+              MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN)));
+    hr::test::pump();
+    CHECK(g_done_calls == 1);
+    CHECK(g_done_window == tree.b);
+    CHECK(g_done_data == 42);
+}
+
+TEST_CASE("send_set_cursor sends nothing while a window has mouse capture", "[child_input]") {
+    Tree tree;
+    g_done_calls = 0;
+    SetCapture(tree.a);
+    CHECK(send_set_cursor(tree.root, POINT{65, 55}, WM_MOUSEMOVE, &record_done, 0) == nullptr);
+    ReleaseCapture();
+    hr::test::pump();
+    CHECK(g_done_calls == 0);
+}
