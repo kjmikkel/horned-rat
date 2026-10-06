@@ -866,6 +866,19 @@ and in `tests/platform/window_subclass_test.cpp`: `static_assert(hr::core::win::
 
 ---
 
+#### Added after the evidence run (agreed with the user, see `a2-4-exit.md` §1)
+
+The evidence matched none of the rows for 5a/5b (no minimise, no dip). Three other fixes were agreed instead, each its own red/green cycle and commit:
+
+- **5c:** `Glue` is kept out of the taskbar and alt-tab (`WS_EX_TOOLWINDOW` while hidden, in `platform::hide_window` / `unhide_window`). If it becomes the foreground window anyway, the presenter takes the foreground back.
+- **5d:** `background = pause` freezes the game:
+  - A `core::PauseClock` gives the game a clock that stands still while it is held; it is served through `GetTickCount` / `timeGetTime` hooks.
+  - `platform::wait_handling_sent_messages` holds a thread while handling sent messages.
+  - The `PeekMessageA` / `GetMessageA` hooks hold the game thread once the game has handled the inactive messages. Focus, close or shutdown releases it.
+- **5e:** `core::FrameStats` names the slow part of the slowest frame (`slowest 64.7 ms (capture 60.1)`).
+
+---
+
 ### Task 6: Closing smoke test, exit notes, spec
 
 **Files:**
