@@ -55,6 +55,7 @@ std::atomic<bool> g_app_active{true};
 std::atomic<bool> g_told_inactive{false};
 std::atomic<bool> g_closing{false};
 std::atomic<DWORD> g_game_thread{0};
+std::atomic<int> g_held_threads{0}; // game threads held right now
 HANDLE g_wake = nullptr;
 // The game's clocks while it may be held (one per time base); guarded by g_clock_mutex.
 std::mutex g_clock_mutex;
@@ -601,25 +602,33 @@ bool holding() {
 } // namespace
 
 void hold_while_paused() {
-    if (GetCurrentThreadId() != g_game_thread || !holding()) {
+    // Every game thread with a message loop is held, not only Glue's: after "new game" the book
+    // screen animates from another thread (A2.4). The presenter thread never comes here (its
+    // PeekMessage is wing32's own import). The first thread in pauses sounds and clocks, the last
+    // one out resumes them.
+    if (g_game_thread == 0 || !holding()) {
         return;
     }
-    {
-        const std::lock_guard lock(g_clock_mutex);
-        g_tick_clock.hold(GetTickCount());
-        g_mm_clock.hold(timeGetTime());
-        g_ever_held = true;
+    if (g_held_threads++ == 0) {
+        {
+            const std::lock_guard lock(g_clock_mutex);
+            g_tick_clock.hold(GetTickCount());
+            g_mm_clock.hold(timeGetTime());
+            g_ever_held = true;
+        }
+        pause_game_sounds(true); // the held game cannot stop its own looping sounds
     }
-    pause_game_sounds(true); // the held game cannot stop its own looping sounds
-    platform::log("presenter: game held");
+    const std::string thread = std::to_string(GetCurrentThreadId()) +
+                               (GetCurrentThreadId() == g_game_thread ? " (main)" : "");
+    platform::log("presenter: game held, thread " + thread);
     platform::wait_handling_sent_messages(g_wake, &holding);
-    pause_game_sounds(false);
-    {
+    platform::log("presenter: game released, thread " + thread);
+    if (--g_held_threads == 0) {
+        pause_game_sounds(false);
         const std::lock_guard lock(g_clock_mutex);
         g_tick_clock.release(GetTickCount());
         g_mm_clock.release(timeGetTime());
     }
-    platform::log("presenter: game released");
 }
 
 DWORD game_time(GameClock clock, DWORD real) {
