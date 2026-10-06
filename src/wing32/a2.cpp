@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <exception>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -43,6 +44,11 @@ std::atomic<int> g_hidden_x{0}; // hidden position, enforced while active
 std::atomic<int> g_hidden_y{0};
 // Written on the game thread before the presenter thread starts (thread start orders the access).
 platform::HiddenState g_hidden_state;
+std::atomic<bool> g_gave_up{false};
+std::mutex g_display_mutex;
+std::optional<DEVMODEA> g_deferred_mode; // guarded by g_display_mutex; nullopt = registry mode
+DWORD g_deferred_flags = 0;
+bool g_display_deferred = false;
 
 std::string class_of(HWND window) {
     if (window == nullptr) {
@@ -155,8 +161,18 @@ class Input final : public platform::PresenterInput {
 
 void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
     g_active = false;
+    g_gave_up = true;
     platform::unhide_window(glue, state);
     platform::log("presenter: game window unhidden (" + reason + ")");
+
+    const std::lock_guard lock(g_display_mutex);
+    if (g_display_deferred) {
+        DEVMODEA mode = g_deferred_mode.value_or(DEVMODEA{});
+        const LONG result =
+            ChangeDisplaySettingsA(g_deferred_mode ? &mode : nullptr, g_deferred_flags);
+        platform::log("presenter: applied the game's deferred display mode -> " +
+                      std::to_string(result));
+    }
 }
 
 void presenter_body();
@@ -337,6 +353,21 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
 }
 
 bool active() { return g_active; }
+
+bool owns_display() { return g_started && !g_gave_up; }
+
+void defer_display_mode(const DEVMODEA* mode, DWORD flags) {
+    const std::lock_guard lock(g_display_mutex);
+    if (mode != nullptr) {
+        g_deferred_mode = *mode;
+        g_deferred_mode->dmSize = sizeof(DEVMODEA);
+        g_deferred_mode->dmDriverExtra = 0; // only the public part is copied
+    } else {
+        g_deferred_mode.reset();
+    }
+    g_deferred_flags = flags;
+    g_display_deferred = true;
+}
 
 HWND presenter_window() { return g_active ? g_presenter.load() : nullptr; }
 

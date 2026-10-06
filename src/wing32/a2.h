@@ -25,6 +25,14 @@ void set_game_cursor(HCURSOR cursor);
 // The presenter window while active (owner for the game's message boxes), else nullptr.
 HWND presenter_window();
 
+// True from the game's main window creation until the presenter gives up: the presenter owns
+// the display, so the game's display-mode changes are deferred (core::defer_display_change).
+bool owns_display();
+
+// Records a deferred display-mode request (nullptr = restore the registry mode). If the presenter
+// gives up, the last one is applied so the game gets the screen it asked for.
+void defer_display_mode(const DEVMODEA* mode, DWORD flags);
+
 // Diagnostics: logs when the physical state or the masking of a mouse button changes.
 void note_button(int vk, bool physically_down, bool masked);
 
