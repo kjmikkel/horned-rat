@@ -22,4 +22,10 @@ bool mask_button(int vk);
 // SetCursor: the game's current cursor, shown by the presenter.
 void set_game_cursor(HCURSOR cursor);
 
+// The presenter window while active (owner for the game's message boxes), else nullptr.
+HWND presenter_window();
+
+// Diagnostics: logs when the physical state or the masking of a mouse button changes.
+void note_button(int vk, bool physically_down, bool masked);
+
 } // namespace hr::wing32::a2

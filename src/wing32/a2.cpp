@@ -41,6 +41,32 @@ std::atomic<int> g_content_h{480};
 std::atomic<int> g_hidden_x{0}; // hidden position, enforced while active
 std::atomic<int> g_hidden_y{0};
 
+std::string class_of(HWND window) {
+    if (window == nullptr) {
+        return "(none)";
+    }
+    char name[64] = {};
+    GetClassNameA(window, name, sizeof name);
+    return name;
+}
+
+const char* activation_name(UINT msg) {
+    switch (msg) {
+    case WM_ACTIVATE:
+        return "WM_ACTIVATE";
+    case WM_ACTIVATEAPP:
+        return "WM_ACTIVATEAPP";
+    case WM_NCACTIVATE:
+        return "WM_NCACTIVATE";
+    case WM_SETFOCUS:
+        return "WM_SETFOCUS";
+    case WM_KILLFOCUS:
+        return "WM_KILLFOCUS";
+    default:
+        return nullptr;
+    }
+}
+
 core::Rect content_rect() {
     return {g_content_x.load(), g_content_y.load(), g_content_w.load(), g_content_h.load()};
 }
@@ -67,6 +93,12 @@ void store_content_rect(core::Rect r) {
 
 // Runs on the game thread for every message of the main window (A2 spec §5.4).
 LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC original) {
+    if (const char* name = activation_name(msg)) {
+        const WPARAM filtered = g_active ? core::filter_activation(msg, wparam) : wparam;
+        platform::log(std::string("diag: Glue ") + name + " wparam=" + std::to_string(wparam) +
+                      " -> " + std::to_string(filtered) +
+                      " foreground=" + class_of(GetForegroundWindow()));
+    }
     if (g_active) {
         if (msg == WM_ACTIVATE || msg == WM_ACTIVATEAPP) {
             wparam = core::filter_activation(msg, wparam);
@@ -96,7 +128,15 @@ class Input final : public platform::PresenterInput {
         g_cursor_x = g.x;
         g_cursor_y = g.y;
         if (g_active && core::classify(msg, wparam) == core::Forward::Mouse) {
-            platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
+            const HWND target =
+                platform::post_mouse(g_glue, msg, wparam, POINT{content.x + g.x, content.y + g.y});
+            if (msg != WM_MOUSEMOVE) {
+                char line[160];
+                std::snprintf(line, sizeof line,
+                              "diag: presenter msg 0x%04X client (%ld,%ld) -> game (%d,%d) -> %s",
+                              msg, client.x, client.y, g.x, g.y, class_of(target).c_str());
+                platform::log(line);
+            }
         }
     }
     void on_key(UINT msg, WPARAM wparam, LPARAM lparam) override {
@@ -117,7 +157,14 @@ void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::
     platform::log("presenter: game window unhidden (" + reason + ")");
 }
 
+void presenter_body();
+
 void presenter_main() {
+    presenter_body();
+    platform::log("diag: presenter thread finished (window and device released)");
+}
+
+void presenter_body() {
     const HWND glue = g_glue;
     platform::HiddenState hidden_state;
     try {
@@ -194,8 +241,10 @@ void presenter_main() {
             if (t2 - stats_start >= std::chrono::seconds(10)) {
                 char line[160];
                 std::snprintf(line, sizeof line,
-                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms",
-                              frames, capture_ms / frames, present_ms / frames);
+                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms, "
+                              "foreground %s",
+                              frames, capture_ms / frames, present_ms / frames,
+                              class_of(GetForegroundWindow()).c_str());
                 platform::log(line);
                 stats_start = t2;
                 capture_ms = present_ms = 0.0;
@@ -206,6 +255,7 @@ void presenter_main() {
             }
         }
         platform::log("presenter: game window destroyed, stopping");
+        g_presenter = nullptr;
     } catch (const std::exception& e) {
         platform::log_exception("presenter", e.what());
         if (!g_stop) {
@@ -236,6 +286,8 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
 
 bool active() { return g_active; }
 
+HWND presenter_window() { return g_active ? g_presenter.load() : nullptr; }
+
 void fake_cursor_pos(POINT& out) {
     POINT origin{0, 0};
     ClientToScreen(g_glue, &origin);
@@ -263,5 +315,22 @@ bool mask_button(int vk) {
 }
 
 void set_game_cursor(HCURSOR cursor) { g_cursor = cursor; }
+
+void note_button(int vk, bool physically_down, bool masked) {
+    static std::atomic<int> last[8]{};
+    if (vk < 0 || vk >= 8) {
+        return;
+    }
+    const int now = (physically_down ? 1 : 0) | (masked ? 2 : 0) | 4;
+    if (last[vk].exchange(now) == now) {
+        return;
+    }
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    platform::log("diag: button vk=" + std::to_string(vk) + (physically_down ? " down" : " up") +
+                  (masked ? " MASKED" : " passed") +
+                  " foreground=" + class_of(GetForegroundWindow()) +
+                  " under_cursor=" + class_of(WindowFromPoint(cursor)));
+}
 
 } // namespace hr::wing32::a2

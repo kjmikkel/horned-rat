@@ -8,5 +8,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID /*reserved*/) {
         DisableThreadLibraryCalls(instance);
         hr::platform::guarded("initialize", [] { hr::wing32::initialize(); }, [] {});
     }
+    if (reason == DLL_PROCESS_DETACH) {
+        hr::platform::log("diag: wing32 DLL_PROCESS_DETACH");
+    }
     return TRUE;
 }
