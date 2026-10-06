@@ -22,6 +22,7 @@ struct Config {
     bool vsync = true;
     bool log = true;
     bool game_debug = true;
+    bool message_census = false; // diagnostics: log the messages the game's windows receive
 
     friend bool operator==(const Config&, const Config&) = default;
 };

@@ -94,6 +94,8 @@ constexpr Field kFields[] = {
     {"debug.log", [](Config& c, std::string_view v) { return assign(c.log, parse_bool(v)); }},
     {"debug.game_debug",
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
+    {"debug.message_census",
+     [](Config& c, std::string_view v) { return assign(c.message_census, parse_bool(v)); }},
 };
 
 const Field* find_field(std::string_view name) {
@@ -140,6 +142,7 @@ vsync        = true
 [debug]
 log          = true        ; horned-rat.log
 game_debug   = true        ; capture the game's own OutputDebugStringA output
+message_census = false     ; log which messages the game's windows receive (diagnostics)
 )ini";
 }
 

@@ -19,7 +19,7 @@ TEST_CASE("every key is read", "[config]") {
     const auto r = load_config("[general]\nenabled = false\n"
                                "[display]\nmode = borderless\nwindow_size = 1920x1440\n"
                                "scale = integer\naspect = stretch\nvsync = no\n"
-                               "[debug]\nlog = off\ngame_debug = 0\n");
+                               "[debug]\nlog = off\ngame_debug = 0\nmessage_census = on\n");
     CHECK(r.warnings.empty());
     CHECK_FALSE(r.config.enabled);
     CHECK(r.config.mode == DisplayMode::Borderless);
@@ -29,6 +29,7 @@ TEST_CASE("every key is read", "[config]") {
     CHECK_FALSE(r.config.vsync);
     CHECK_FALSE(r.config.log);
     CHECK_FALSE(r.config.game_debug);
+    CHECK(r.config.message_census);
 }
 
 TEST_CASE("values are case-insensitive", "[config]") {
