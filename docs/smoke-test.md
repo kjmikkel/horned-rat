@@ -36,3 +36,21 @@ result of each item in the PR or release notes. Never commit game logs or screen
 - [ ] `horned-rat.log` shows `presenter: running`, 10-second performance lines, and no `exception`.
 
 The log item applies from A1 on. Later milestones add items here (window resizing, scale modes, Alt+Enter, ...).
+
+### A2 scaling (from A2.2)
+- [ ] The monitor keeps its resolution when the game starts (the game's 640x480 switch is deferred).
+- [ ] The presenter opens centred at `window_size` (or the largest fit on a small screen).
+- [ ] Dragging the window edges scales the picture live; maximize fills the screen.
+- [ ] `scale = sharp`: the picture fills the window with crisp pixels.
+- [ ] `scale = integer`: whole-number scaling with black bars; every game pixel is a clean block.
+- [ ] `scale = nearest-fit`: fills the window; slightly uneven pixels are expected.
+- [ ] `aspect = stretch`: the picture fills the whole client area (integer: whole factor per axis).
+- [ ] `mode = borderless`: the game starts covering the monitor.
+- [ ] Alt+Enter toggles windowed ↔ borderless and returns to the previous window size and position,
+      also when the window was maximized before.
+- [ ] Clicks hit precisely at large sizes, including small buttons at the picture's edges.
+- [ ] Quitting with the window's close button or Alt+F4 ends `WHSHR.EXE` (as does the curtain).
+- [ ] With Windows display scaling at 125 % or 150 % (if available), the picture stays crisp.
+- [ ] Carried from A2.1: typing a save-game name; battle mouse control and map scrolling;
+      briefing videos; clicks on the desktop do not reach the game; dragging the presenter partly
+      off-screen keeps it updating; other windows stay clickable over the hidden game window.

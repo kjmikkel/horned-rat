@@ -37,7 +37,9 @@ From the A2 spike (throwaway tool, 2026-10-05, display 1920×1080 at 100 %):
 - `PrintWindow(PW_RENDERFULLCONTENT)` costs 22–31 ms and sometimes returns black frames:
   rejected.
 - The `Glue` client is 650×491; the 640×480 picture is the `BitmapScrn` child at offset (5,5).
-- The display mode stays at the desktop resolution while the game is focused.
+- ~~The display mode stays at the desktop resolution while the game is focused.~~ **Corrected
+  (A2.2 exit):** `WHSHR.EXE` switches the primary monitor to 640×480 (`ChangeDisplaySettingsA`,
+  looked up with `GetProcAddress`, so the IAT hooks missed it). The presenter defers the switch.
 - Click messages posted from another process are ignored, even with the real cursor moved to
   the right place: the game decides by polling cursor position and button state.
 - The game shrinks/changes when it loses focus (observed by the user).
@@ -51,6 +53,10 @@ From the A2.1 exit (`a2-1-exit.md` §3):
   so effects and speech are muted while `Glue` is not foreground (always, once hidden).
 - The game's dialogs are `MessageBoxA` boxes owned by `Glue`; each runs a modal loop on the game
   thread.
+
+From the A2.2 exit (`a2-2-exit.md` §3):
+- The game posts `WM_QUIT` only on its own exit path; closed otherwise, its `GetMessage` loop
+  waits forever. The `Glue` subclass posts `WM_QUIT` after `WM_DESTROY`.
 
 ## 3. Approach
 
@@ -158,6 +164,21 @@ synchronisation with the game's drawing).
 - `Glue` is hidden in the `CreateWindowExA` hook, before the game first shows it (§7), instead of
   after the first capture — the late hide showed the window for ~1.4 s.
 
+### 5.6 Decisions made in A2.2
+
+- `integer` with `aspect = stretch` uses the largest whole factor per axis (e.g. 3×2 on
+  1920×1080): it ignores 4:3 while every game pixel stays a whole number of screen pixels.
+- Shaders compile at runtime (`D3DCompile`); if that fails the presenter is disabled and the game
+  unhidden — no separate 1:1 fallback.
+- Live redraw while resizing: the window ticks every 15 ms during the modal size/move loop and
+  the presenter renders a frame per tick.
+- The presenter window is per-monitor DPI aware (V2, else V1); the game's window stays unaware.
+  Presenter-window handlers that touch the game's windows switch back to the game's DPI context.
+- Sharp-bilinear is single-pass ("sharp-bilinear-simple"): samples snap to the texel centre
+  except in a band of width 1/prescale at texel edges.
+- The game's display-mode changes are deferred while the presenter owns the display and replayed
+  if it gives up (`core::defer_display_change`).
+
 ## 6. Configuration
 
 New `horned-rat.ini` keys (existing keys from Stage A §6.1 unchanged; invalid values warn and use
@@ -238,3 +259,9 @@ all fixed. Capture costs 4–6 ms on the hidden window (spike: 1.3 ms visible). 
 typing a save name, battle mouse control, `SetCapture` behaviour, dragging partly off-screen,
 click-through — carried into the A2.2 smoke test. A ~0.2 s brightness dip when the presenter first
 appears is noted for A2.4.
+
+A2.2 exit results (`a2-2-exit.md`): all scale modes, maximize, live resizing, borderless and
+Alt+Enter work at ~60 fps up to 1920×1080. Two bugs found and fixed: the game's 640×480 display
+switch and the missing `WM_QUIT` when closed with ✕/Alt+F4. Known issue moved to A2.3: in the
+books menu the game's cursor and item hover subtitles do not appear (hypothesis: class cursors
+and `WM_SETCURSOR`, which only reaches the window under the real cursor).
