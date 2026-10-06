@@ -41,8 +41,16 @@ From the A2 spike (throwaway tool, 2026-10-05, display 1920×1080 at 100 %):
 - Click messages posted from another process are ignored, even with the real cursor moved to
   the right place: the game decides by polling cursor position and button state.
 - The game shrinks/changes when it loses focus (observed by the user).
-- Open: whether palette fades are visible on a modern 32-bit desktop (data lost in the spike;
-  measured in A2.1).
+- ~~Open: whether palette fades are visible on a modern 32-bit desktop.~~ **Measured (A2.1
+  exit):** they are, and the presenter reproduces them step for step (`a2-1-exit.md` §4).
+
+From the A2.1 exit (`a2-1-exit.md` §3):
+- `ChildWindowFromPointEx` finds nothing under a layered alpha-0 parent; child hit-testing must be
+  geometric.
+- The game's DirectSound buffers lack `DSBCAPS_GLOBALFOCUS` and its cooperative window is `Glue`,
+  so effects and speech are muted while `Glue` is not foreground (always, once hidden).
+- The game's dialogs are `MessageBoxA` boxes owned by `Glue`; each runs a modal loop on the game
+  thread.
 
 ## 3. Approach
 
@@ -137,6 +145,18 @@ synchronisation with the game's drawing).
   forced to the hidden position (catches `SetWindowPos`, `MoveWindow` and everything else).
 - Closing the presenter (✕, Alt+F4) posts `WM_CLOSE` to `Glue`. `WM_DESTROY` of `Glue` (seen by
   the subclass) shuts the presenter thread down.
+- Secondary DirectSound buffers get `DSBCAPS_GLOBALFOCUS` (vtable hook on
+  `IDirectSound::CreateSoundBuffer`), so sound plays while `Glue` is hidden.
+- `MessageBoxA` is owned by the presenter while A2 is active, so dialogs appear on top of it.
+
+### 5.5 Deviations made in A2.1
+
+- Position lock via `WM_WINDOWPOSCHANGING` in the subclass (as written above), not by hooking
+  `SetWindowPos`/`MoveWindow`.
+- No `background` key yet: activation loss is always filtered (`run`); `pause` comes in A2.4.
+- The 1:1 frame is copied with `CopySubresourceRegion`; the scaling shader arrives in A2.2.
+- `Glue` is hidden in the `CreateWindowExA` hook, before the game first shows it (§7), instead of
+  after the first capture — the late hide showed the window for ~1.4 s.
 
 ## 6. Configuration
 
@@ -156,13 +176,14 @@ There is no parking option: hiding on-screen is the only mode (§3).
 
 Start-up:
 1. `DllMain`: as in A1 (config, log, hooks).
-2. `CreateWindowExA` hook: on the first top-level window (`Glue`), start the presenter thread.
+2. `CreateWindowExA` hook: on the first top-level window (`Glue`), hide it (before the game
+   shows it) and start the presenter thread.
 3. Presenter thread: create window and D3D11 device (hardware, else WARP), capture one frame
-   successfully, **then** subclass and hide `Glue`.
+   successfully, **then** subclass `Glue` and show the presenter.
 
 | Failure | Response |
 |---|---|
-| No D3D11 device / window creation fails | Never hide; game runs as in A1; reason logged |
+| No D3D11 device / window creation fails / first capture fails | Unhide `Glue`; game runs as in A1; reason logged |
 | Capture fails (`BitBlt` false) | Keep the last good frame; log once; after 2 s of failures unhide `Glue` at (0,0) and close the presenter |
 | Exception on the presenter thread | Top-level catch: unhide `Glue`, log, close the presenter |
 | Exception in a hook | Guard logs and calls the original (unchanged) |
@@ -210,3 +231,10 @@ Each leaves the game playable; `enabled = false` always gives vanilla behaviour.
 | Hidden window partly outside the desktop (clipped drawing) | Kept inside its monitor's work area; never follows the presenter |
 | Performance on weak GPUs | WARP fallback; capture is ~1.3 ms; 10 s performance log line |
 | Torn frames | Accepted (§5.1) |
+
+A2.1 exit results (`a2-1-exit.md`): the hidden window caused three bugs — child hit-testing,
+muted DirectSound, dialogs under the presenter (which also hung the exit) — plus a start-up flash;
+all fixed. Capture costs 4–6 ms on the hidden window (spike: 1.3 ms visible). Not yet tested:
+typing a save name, battle mouse control, `SetCapture` behaviour, dragging partly off-screen,
+click-through — carried into the A2.2 smoke test. A ~0.2 s brightness dip when the presenter first
+appears is noted for A2.4.
