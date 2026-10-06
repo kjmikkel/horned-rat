@@ -1,4 +1,5 @@
 #include "platform/child_input.h"
+#include "platform/hidden_window.h"
 #include "test_window.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -67,4 +68,23 @@ TEST_CASE("post_key goes to the window with keyboard focus", "[child_input]") {
     post_key(tree.root, WM_CHAR, 'x', 1);
     hr::test::pump();
     CHECK(got(tree.b, WM_CHAR, 'x', 1));
+}
+
+TEST_CASE("children are found and reached when the root window is hidden", "[child_input]") {
+    // Regression (A2.1 smoke test): ChildWindowFromPointEx finds nothing under a layered alpha-0
+    // parent, so every forwarded click landed on the hidden main window instead of its children.
+    Tree tree;
+    RECT area{};
+    SystemParametersInfoA(SPI_GETWORKAREA, 0, &area, 0);
+    const HiddenState hidden = hide_window(tree.root, area);
+
+    const auto hit = deepest_child_at(tree.root, {65, 55});
+    CHECK(hit.window == tree.b);
+    CHECK(hit.point.x == 5);
+    CHECK(hit.point.y == 5);
+
+    CHECK(post_mouse(tree.root, WM_LBUTTONDOWN, MK_LBUTTON, {65, 55}) == tree.b);
+    hr::test::pump();
+    CHECK(got(tree.b, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(5, 5)));
+    unhide_window(tree.root, hidden);
 }
