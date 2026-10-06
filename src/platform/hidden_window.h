@@ -9,6 +9,7 @@ struct HiddenState {
     RECT window_rect{};
     LONG_PTR ex_style = 0;
     bool hidden = false;
+    bool animations_off = false; // DWM transitions disabled (restored by unhide)
 };
 
 // Makes `window` invisible (layered, alpha 0), click-through and absent from the taskbar and
