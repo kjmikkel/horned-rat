@@ -149,6 +149,10 @@ Red/green TDD for every behaviour (project rule).
   no own palette callback), and the viewport is configured 4-aligned (`align4(w)·k` wide).
 - **B1.1 — Hi-res overlay.** Publishing, the presenter overlay with the mask, `render_scale`, the
   slow-render fallback.
+  **Result (2026-10-07):** passed: 2× in a 1280×960 window (1.1–1.7 ms per render), 3× fullscreen
+  (2.2–2.8 ms); overlaid UI stays visible; `render_scale = 1` looks like vanilla. A flicker while
+  panning (capture one frame behind the published render) was fixed by falling back to the
+  previous render. Details in `docs/re-notes/b1-1-exit.md`.
 - **B1.2 — Polish.** Layout switch (both layouts), half-detail divisor, performance line, smoke
   test.
 - **B2 — Bigger view (own spec).** Builds on our own viewport: larger extents and a larger
