@@ -122,8 +122,6 @@ constexpr Field kFields[] = {
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
     {"debug.message_census",
      [](Config& c, std::string_view v) { return assign(c.message_census, parse_bool(v)); }},
-    {"debug.b1_spike",
-     [](Config& c, std::string_view v) { return assign(c.b1_spike, parse_int_in(v, 0, 3)); }},
 };
 
 const Field* find_field(std::string_view name) {
