@@ -1,7 +1,7 @@
 # Stage A2: In-process Presenter — Design
 
 - **Date:** 2026-10-05
-- **Status:** Approved. **Revised 2026-10-05 during A2.1 Task 5:** option A (off-screen parking) does
+- **Status:** Approved; A2.1–A2.4 complete (2026-10-07). **Revised 2026-10-05 during A2.1 Task 5:** option A (off-screen parking) does
   not work; the game window is instead kept on-screen, invisible and click-through (§2, §3).
 - **Supersedes:** §5.1, §5.2 and §5.4 of `2026-10-05-stage-a-display-wrapper-design.md` (the Stage A
   spec). Everything else in the Stage A spec (layering, config/error-handling principles,
@@ -159,7 +159,20 @@ synchronisation with the game's drawing).
 ### 5.4 Window state
 
 - `Glue` is subclassed. With `background = run`, `WM_ACTIVATE(WA_INACTIVE)` and
-  `WM_ACTIVATEAPP(FALSE)` are passed on as active; with `background = pause` they pass unchanged.
+  `WM_ACTIVATEAPP(FALSE)` are passed on as active.
+- **`background = pause` (A2.4).** What counts is whether the *application* is active (the
+  presenter's `WM_ACTIVATEAPP`; a switch to another thread of our own process does not count):
+  - The presenter posts `WM_ACTIVATE` and `WM_ACTIVATEAPP` to `Glue` in vanilla's order, so the
+    game sees the switch although `Glue` itself never has the focus.
+  - Once the game has handled the inactive `WM_ACTIVATEAPP`, every game thread entering
+    `PeekMessageA` / `GetMessageA` is held there until the application is active again or closing.
+    Sent messages are still handled while held, so no other thread ever waits on the game.
+  - While held, the game's clocks stand still, and its sound effects, MCI devices and MIDI streams
+    are paused (§5.8). On return it carries on where it stopped.
+- While hidden, `Glue` is a tool window (`WS_EX_TOOLWINDOW`): no taskbar entry, not in alt-tab. If
+  it becomes the foreground window anyway, the presenter takes the focus back, except while a game
+  message box is open. DWM transitions are off for it, and the process has no "Not Responding"
+  ghost windows (`DisableProcessWindowsGhosting`), since a held game fetches no messages.
 - The `Glue` subclass handles `WM_WINDOWPOSCHANGING`: size changes pass through, the position is
   forced to the hidden position (catches `SetWindowPos`, `MoveWindow` and everything else).
 - Closing the presenter (✕, Alt+F4) posts `WM_CLOSE` to `Glue`. `WM_DESTROY` of `Glue` (seen by
@@ -218,6 +231,27 @@ synchronisation with the game's drawing).
   untranslated (`core::skip_translate`). The presenter already forwards the characters it made
   from the real keyboard state; translating again doubled every typed character.
 
+### 5.8 Decisions made in A2.4
+
+- **`pause` is a real freeze** (user's choice): the game's own reaction to deactivation only
+  turns its music off. Holding happens in the message hooks, not by suspending threads, so sent
+  messages and the game's dialogs keep working.
+- **Clocks:** one `core::PauseClock` per time base (`GetTickCount`, `timeGetTime`). The hooks
+  return real time minus the total time held, so the game does not catch up on return.
+- **Sound effects:** DirectSound vtable hooks (`platform::VtablePatches`, which keeps the
+  originals per vtable since the game's modules create several DirectSound objects). Buffers are
+  tracked per device (`core::SoundPause`) and forgotten with it: releasing a device frees its
+  buffers without their own `Release`. While held, playing buffers are stopped; the game's sound
+  thread, which runs on, cannot restart them (`Play` is held back until resume, `Stop` cancels it,
+  `GetStatus` reports them as playing).
+- **Music:** MCI devices (`mciSendCommandA`) and MIDI streams (`midiStream*`) are tracked
+  (`core::PlaybackPause`) and paused while held. An MCI device resumes with the game's own end
+  notification, for its tune repeats.
+- **Diagnostics that stay:** a first-chance access-violation log (`platform::AccessViolationLog`,
+  first 5, with module+offset and stack), since the game exits with its own handler's code; the
+  hold logs its thread and the counts of paused buffers, devices and streams; the performance
+  line names the slowest frame's parts (`core::FrameStats`); a start-up brightness trace.
+
 ## 6. Configuration
 
 New `horned-rat.ini` keys (existing keys from Stage A §6.1 unchanged; invalid values warn and use
@@ -225,7 +259,7 @@ the default):
 
 ```ini
 [general]
-background = run        ; run | pause
+background = run        ; run (keeps playing when not focused) | pause (freezes, silent)
 [display]
 cursor     = scaled     ; scaled | native
 [debug]
@@ -255,7 +289,8 @@ Start-up:
 (0,0) and show it; the subclass stays installed but passes everything through once inactive. Every failure path ends with a playable game.
 
 Logging adds: presenter lifecycle, device type, scale mode and destination rect, hide/unhide with
-reason, and every 10 s average capture ms, present ms and frame count.
+reason, and every 10 s average capture ms, present ms and frame count, plus the slowest frame
+and its capture and present parts (A2.4).
 
 ## 8. Testing
 
@@ -316,3 +351,17 @@ A2.3 exit results (`a2-3-exit.md`):
 - **Typing doubled every character;** fixed with the `TranslateMessage` hook (§5.7).
 - **Open:** æ/ø/å cannot be typed (accepted); a brief small cursor flash at exit;
   `aspect = stretch` and DPI above 100 % are still untested.
+
+A2.4 exit results (`a2-4-exit.md`):
+- **`background = run` and `pause` pass the smoke test**, as do `aspect = stretch` (with `sharp`
+  and `integer`) and raised Windows display scaling.
+- `pause` needed more than the activation messages: the game is held in its message loop, with
+  still clocks and paused sound and music (§5.8). Nine bugs were found and fixed on the way,
+  among them a crash from stale sound buffers and three ways the hidden window showed up
+  (taskbar / alt-tab, restore animation, "Not Responding" ghost).
+- Performance: ~600 frames / 10 s; the slowest frame is normally one refresh (~17 ms). Frames of
+  45–63 ms occur only in `Present` at window or focus changes; accepted.
+- **Open:** one unreproduced missed hold, the MCI pause that never acts (calls go through GOG's
+  `WINMS.dll`), rare first-chance access violations inside USER32 (`a2-4-exit.md` §5).
+
+**Stage A2 is complete.**

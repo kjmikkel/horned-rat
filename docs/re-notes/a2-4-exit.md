@@ -81,3 +81,45 @@ Each round: the user's report, then what the log showed and what changed. Builds
 7. **`5d017ae`**: animations stop on the first book screen, everything resumes, battles freeze and resume.
    - But every hold in the log was on the main thread, so the hypothesis is **refuted**. The missed hold of round 6 was not reproduced and is not explained (§5).
    - A cut-scene hold paused 2 of 2 sound buffers and 1 MIDI stream.
+
+## 2. Smoke test
+
+2026-10-07, build `5d017ae`, release build, hardware D3D11, 1280×960 window, `cursor = scaled`. Three runs, each against the full checklist in `docs/smoke-test.md` unless noted.
+
+| Run | Settings | Result |
+|---|---|---|
+| 1 | `background = pause`, `scale = sharp`, `aspect = 4:3`; Windows display scaling raised above 100 % by the user | All items pass, including the A2.4 background items, the carried A2.1–A2.3 items and the DPI item (picture stays crisp). |
+| 2 | `background = run` | All items pass. The log shows `lost focus, game runs on` at each switch, no hold and no access violation. |
+| 3 | `aspect = stretch` with `scale = sharp`, then `scale = integer` | Both fill the client area as specified. `integer` gives 2×2 at 1280×960 (no bars), 3×2 at 1920×1080 (`dest (0,60 1920x960)`) and when maximised (`dest (0,48 1920x960)`). Clicks and the cursor's tip land correctly, also near the bars. |
+
+The ini was restored to its original content after run 3.
+
+## 3. Performance
+
+- Normal play: 600–601 frames per 10 s, capture 2.7–6.7 ms, present 10–14 ms (the present time includes the wait for vsync).
+- **The slowest frame** is 16.7–17.4 ms in almost every 10 s line, i.e. no missed refresh.
+- In run 3 (about an hour, 372 lines), only 3 lines had a slowest frame above 21 ms (32–34 ms, one missed refresh). Two were in `Present` (at start-up and at an Alt+Enter); one was in capture (25.9 ms).
+- The ~65 ms frames seen in the investigation (§1, run A) appeared in the test rounds as 45–63 ms frames, always in `Present` and always at a window or focus change (alt-tab, resize, Alt+Enter). They did not appear in the smoke runs during play. They are the cost of DXGI/DWM reacting to the window change and are accepted.
+
+## 4. Bugs found and fixed
+
+| # | Bug | Cause | Fix |
+|---|---|---|---|
+| 1 | `pause` did not stop the game (units kept moving) | The game's own reaction to deactivation only turns its music off | `5d017ae`, `8420e71`: the game's message loop is held while unfocused; `GetTickCount` / `timeGetTime` stand still meanwhile |
+| 2 | Two taskbar entries; a small copy of the picture in alt-tab | The hidden `Glue` was still an app window | `ae3a22c`: `WS_EX_TOOLWINDOW` while hidden; take the foreground back if `Glue` gets it |
+| 3 | A small copy of the window at the top left after quick switching | DWM's restore animation of the hidden window | `cdd78e3`: DWM transitions off while hidden |
+| 4 | Same symptom after a long hold | Windows' "Not Responding" ghost | `717b6d3`: `DisableProcessWindowsGhosting` |
+| 5 | The exit question went behind the presenter | The focus take-back fired while Windows activated `Glue` for the box | `7b63e66`: no take-back while a game message box is open |
+| 6 | Looping effects and cut-scene sound kept playing while held | The game's sound threads run on | `7b63e66`, `9588dcb`: secondary buffers tracked and stopped; `Play` held back until resume |
+| 7 | Crash on return from a cut-scene | Freed buffers of a released DirectSound object stayed in the list | `9588dcb`: buffers tracked per DirectSound object; vtable patches per vtable |
+| 8 | MIDI music played while held | MCI devices and MIDI streams play in Windows' threads | `6192f96`: MCI devices and MIDI streams paused |
+| 9 | No way to tell which part of a slow frame is slow | The performance line had averages only | `d7c3b67`: the line names the slowest frame and its capture / present parts |
+
+## 5. Open items
+
+- **Missed hold on the first book screen** (test round 6): the game handled `WM_ACTIVATEAPP 0` but was never held, and kept drawing. Not reproduced after `5d017ae`; the hypothesis (another thread) was refuted. The hold logs its thread, so a repeat can be diagnosed.
+- **Music in test round 4** that the MIDI hooks did not see: unexplained, not seen since `6192f96`.
+- **The MCI pause has never acted:** `MIDI.DLL` sends its MCI commands through GOG's `WINMS.dll`, and only open and close pass the hooked `WINMM` import. The game pauses its own menu music on deactivation, so nothing is audible. Hooking `WINMS.dll`'s imports would close the gap if needed.
+- **First-chance access violations in USER32** on the presenter thread (about one per hour, e.g. reading 0x0 at `USER32.dll+0x263FC` under `dxgi.dll`). Windows handles them itself; no effect seen. Logged by the access-violation log, which stops after 5.
+- **Nested activation handling:** if the game's `WM_ACTIVATEAPP` handler re-entered, `g_told_inactive` could be stale for one message. Not seen; noted.
+- Carried from A2.3: æ/ø/å cannot be typed (accepted); a brief small cursor flash at exit.
