@@ -82,3 +82,14 @@ The log item applies from A1 on. Later milestones add items here (window resizin
       the game behaves as its `background` mode says.
 - [ ] `horned-rat.log`: no `access violation` lines from `WING32.dll` itself; the 10 s lines show
       `slowest` below ~35 ms in normal play.
+
+### Stage B1 sharp 3D view (from B1.1)
+- [ ] `render_scale = auto` at 1280×960: the battle 3D view is visibly sharper than the rest of the
+      picture (smooth unit outlines and edges); the log shows `3D view x2`.
+- [ ] Fullscreen at 1920×1080 (`scale = sharp`): `3D view x3`; still sharp; no stutter.
+- [ ] Whatever the game draws over the 3D view (unit info, menus, dialogs, the exit question) is
+      shown normally, not hidden behind the sharp view.
+- [ ] Camera movement and unit movement stay smooth; the sharp view is never behind the rest of
+      the picture, and the landscape does not flicker while the camera pans.
+- [ ] `render_scale = 1`: the 3D view looks exactly like vanilla; the log has no `b1:` lines.
+- [ ] `horned-rat.log`: `b1: known GAMEF.DLL build`, `b1: device …`, no `b1: off` line.

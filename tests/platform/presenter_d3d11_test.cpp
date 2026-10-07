@@ -261,3 +261,50 @@ TEST_CASE("the next frame is drawn opaque again after a sprite", "[presenter_d3d
     presenter->present(false);
     DestroyWindow(window);
 }
+
+TEST_CASE("the overlay is blended over the frame where it is opaque", "[presenter_d3d11]") {
+    const HWND window = hr::test::make_window(0, 0, 64, 48);
+    auto presenter = make(window);
+    const std::vector<std::uint32_t> frame(64 * 48, 0x00102030u);
+    // 2x2: opaque red, transparent (colour kept), opaque green, opaque blue
+    const std::uint32_t overlay[] = {0xFFFF0000u, 0x00FF0000u, 0xFF00FF00u, 0xFF0000FFu};
+    REQUIRE(presenter->set_overlay(overlay, {2, 2}));
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    presenter->draw_overlay({8, 8, 4, 4}, D3DPresenter::Filter::Point);
+    const auto pixels = presenter->read_back();
+    REQUIRE(pixels.size() == 64u * 48u);
+    CHECK(at(pixels, 64, 8, 8) == 0xFF0000u);
+    CHECK(at(pixels, 64, 9, 9) == 0xFF0000u);
+    CHECK(at(pixels, 64, 10, 8) == 0x102030u); // transparent texel
+    CHECK(at(pixels, 64, 8, 10) == 0x00FF00u);
+    CHECK(at(pixels, 64, 11, 11) == 0x0000FFu);
+    CHECK(at(pixels, 64, 12, 12) == 0x102030u); // outside
+    presenter->present(false);
+    DestroyWindow(window);
+}
+
+TEST_CASE("drawing without an overlay leaves the frame alone", "[presenter_d3d11]") {
+    const HWND window = hr::test::make_window(0, 0, 64, 48);
+    auto presenter = make(window);
+    const std::vector<std::uint32_t> frame(64 * 48, 0x00405060u);
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    presenter->draw_overlay({0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    const auto pixels = presenter->read_back();
+    CHECK(at(pixels, 64, 5, 5) == 0x405060u);
+    DestroyWindow(window);
+}
+
+TEST_CASE("an overlay of a new size replaces the old one", "[presenter_d3d11]") {
+    const HWND window = hr::test::make_window(0, 0, 64, 48);
+    auto presenter = make(window);
+    const std::vector<std::uint32_t> frame(64 * 48, 0u);
+    const std::uint32_t one_texel[] = {0xFFFF0000u};
+    const std::uint32_t four_texels[] = {0xFF00FF00u, 0xFF00FF00u, 0xFF00FF00u, 0xFF00FF00u};
+    REQUIRE(presenter->set_overlay(one_texel, {1, 1}));
+    REQUIRE(presenter->set_overlay(four_texels, {2, 2}));
+    presenter->render(frame.data(), {64, 48}, {0, 0, 64, 48}, D3DPresenter::Filter::Point);
+    presenter->draw_overlay({0, 0, 4, 4}, D3DPresenter::Filter::Point);
+    const auto pixels = presenter->read_back();
+    CHECK(at(pixels, 64, 3, 3) == 0x00FF00u);
+    DestroyWindow(window);
+}

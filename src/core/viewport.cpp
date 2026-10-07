@@ -1,6 +1,7 @@
 #include "core/viewport.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace hr::core {
 namespace {
@@ -43,6 +44,23 @@ Point keep_inside(Rect window, Rect area) {
     };
     return {axis(window.x, window.width, area.x, area.width),
             axis(window.y, window.height, area.y, area.height)};
+}
+
+Rect map_rect(Rect r, Size content, Rect dest) {
+    if (content.width <= 0 || content.height <= 0) {
+        return {};
+    }
+    const auto sx = [&](int x) {
+        return dest.x +
+               static_cast<int>(std::lround(static_cast<double>(x) * dest.width / content.width));
+    };
+    const auto sy = [&](int y) {
+        return dest.y +
+               static_cast<int>(std::lround(static_cast<double>(y) * dest.height / content.height));
+    };
+    const int left = sx(r.x);
+    const int top = sy(r.y);
+    return {left, top, sx(r.x + r.width) - left, sy(r.y + r.height) - top};
 }
 
 } // namespace hr::core

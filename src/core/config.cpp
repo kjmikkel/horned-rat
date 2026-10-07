@@ -109,13 +109,19 @@ constexpr Field kFields[] = {
          return assign(c.cursor, parse_choice<CursorMode>(v, {{"scaled", CursorMode::Scaled},
                                                               {"native", CursorMode::Native}}));
      }},
+    {"display.render_scale",
+     [](Config& c, std::string_view v) {
+         if (to_lower(v) == "auto") {
+             c.render_scale = 0;
+             return true;
+         }
+         return assign(c.render_scale, parse_int_in(v, 1, 4));
+     }},
     {"debug.log", [](Config& c, std::string_view v) { return assign(c.log, parse_bool(v)); }},
     {"debug.game_debug",
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
     {"debug.message_census",
      [](Config& c, std::string_view v) { return assign(c.message_census, parse_bool(v)); }},
-    {"debug.b1_spike",
-     [](Config& c, std::string_view v) { return assign(c.b1_spike, parse_int_in(v, 0, 3)); }},
 };
 
 const Field* find_field(std::string_view name) {
@@ -161,6 +167,7 @@ scale        = sharp       ; integer | sharp | nearest-fit
 aspect       = 4:3         ; 4:3 | stretch
 vsync        = true
 cursor       = scaled      ; scaled (drawn with the picture) | native (Windows cursor)
+render_scale = auto        ; battle 3D view detail: auto | 1 (off, original) | 2 | 3 | 4
 [debug]
 log          = true        ; horned-rat.log
 game_debug   = true        ; capture the game's own OutputDebugStringA output

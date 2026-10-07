@@ -5,8 +5,11 @@
 #include "core/frame_stats.h"
 #include "core/input_map.h"
 #include "core/luma.h"
+#include "core/overlay.h"
 #include "core/pause_clock.h"
+#include "core/render_scale.h"
 #include "core/scaling.h"
+#include "core/shadow_frame.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
 #include "platform/crash_log.h"
@@ -21,6 +24,7 @@
 #include "platform/window_capture.h"
 #include "platform/window_subclass.h"
 #include "wing32/hooks.h"
+#include "wing32/rl_shadow.h"
 #include "wing32/runtime.h"
 
 #include <atomic>
@@ -139,6 +143,92 @@ void store_content_rect(core::Rect r) {
     g_content_w = r.width;
     g_content_h = r.height;
 }
+
+// Stage B1 (spec 2026-10-07 §5.3): draws the newest second render of the battle's 3D view over
+// the captured picture where the capture shows the game's own render. The game publishes a render
+// just before it blits it, so a capture may still show the one before: the previous render is
+// kept and used when it matches the capture better. Presenter thread.
+class BattleOverlay {
+  public:
+    void draw(platform::D3DPresenter& d3d, HWND glue, core::Rect content, core::Rect dest,
+              const std::uint32_t* captured, core::Size captured_size,
+              platform::D3DPresenter::Filter filter) {
+        core::ShadowFrame next;
+        if (rl_shadow::take_frame(seen_, next)) {
+            previous_ = std::move(current_);
+            current_.frame = std::move(next);
+            current_.game = core::to_bgra(current_.frame.game.data(), current_.frame.size.width,
+                                          current_.frame.size, current_.frame.palette);
+            current_.id = ++next_id_;
+        }
+        const core::ShadowFrame& newest = current_.frame;
+        const auto view = reinterpret_cast<HWND>(newest.view_window);
+        if (current_.id == 0 || rl_shadow::now_s() - newest.time_s > 0.25 || !IsWindow(view) ||
+            !IsWindowVisible(view)) {
+            return;
+        }
+        RECT r{};
+        GetWindowRect(view, &r);
+        MapWindowPoints(HWND_DESKTOP, glue, reinterpret_cast<POINT*>(&r), 2);
+        const core::Rect in_content{r.left - content.x, r.top - content.y, newest.size.width,
+                                    newest.size.height};
+        auto mask = core::overlay_mask(captured, captured_size, in_content, current_.game);
+        const Entry* shown = &current_;
+        if (previous_.id != 0 && previous_.frame.size == newest.size &&
+            previous_.frame.factor == newest.factor) {
+            auto older = core::overlay_mask(captured, captured_size, in_content, previous_.game);
+            if (core::prefer_previous(mask, older)) {
+                mask = std::move(older);
+                shown = &previous_;
+                ++used_previous_;
+            }
+        }
+        ++draws_;
+        if (2 * core::mask_coverage(mask) < static_cast<int>(mask.size())) {
+            ++mostly_hidden_;
+        }
+        if (shown->id != composed_id_ || mask != mask_) {
+            mask_ = std::move(mask);
+            const core::ShadowFrame& f = shown->frame;
+            const auto pixels =
+                core::compose_overlay(f.hires.data(), f.stride, f.size, f.factor, f.palette, mask_);
+            if (!d3d.set_overlay(pixels.data(),
+                                 {f.size.width * f.factor, f.size.height * f.factor})) {
+                return;
+            }
+            composed_id_ = shown->id;
+        }
+        d3d.draw_overlay(core::map_rect(in_content, captured_size, dest), filter);
+    }
+
+    // Diagnostics for the 10 s line: overlay draws, how many showed the previous render, and how
+    // many had less than half of the view matching; then resets the counts.
+    std::string take_line() {
+        char line[128];
+        std::snprintf(line, sizeof line,
+                      "%d overlay draws, %d from the previous render, %d mostly hidden", draws_,
+                      used_previous_, mostly_hidden_);
+        draws_ = used_previous_ = mostly_hidden_ = 0;
+        return line;
+    }
+
+  private:
+    struct Entry {
+        core::ShadowFrame frame;
+        std::vector<std::uint32_t> game; // the game's 1× render as 0x00RRGGBB
+        std::uint64_t id = 0;            // 0 = none
+    };
+
+    std::uint64_t seen_ = 0;
+    std::uint64_t next_id_ = 0;
+    std::uint64_t composed_id_ = 0;
+    Entry current_;
+    Entry previous_;
+    std::vector<std::uint8_t> mask_;
+    int draws_ = 0;
+    int used_previous_ = 0;
+    int mostly_hidden_ = 0;
+};
 
 // Runs on the game thread for every message of the main window (A2 spec §5.4).
 LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC original) {
@@ -366,6 +456,7 @@ void presenter_body() {
         auto last_good = Clock::now();
         auto stats_start = Clock::now();
         core::FrameStats stats;
+        BattleOverlay battle_overlay;
         const auto running_since = Clock::now();
         core::BrightnessTrace brightness(5.0, 4.0); // diagnostics: the start-up dip
 
@@ -416,6 +507,10 @@ void presenter_body() {
             const core::Rect dest = core::dest_rect(client, {content.width, content.height},
                                                     config.scale, config.aspect);
             input.set_dest(dest);
+            rl_shadow::set_factor(config.render_scale == 1
+                                      ? 1
+                                      : core::render_factor(config.render_scale,
+                                                            {content.width, content.height}, dest));
             const HCURSOR game_cursor = g_cursor;
             const CursorSprite* sprite = nullptr;
             if (config.cursor == core::CursorMode::Scaled && game_cursor != nullptr) {
@@ -449,6 +544,8 @@ void presenter_body() {
             }
             const auto t1 = Clock::now();
             d3d->render(capture.pixels(), capture.size(), dest, filter);
+            battle_overlay.draw(*d3d, glue, content, dest, capture.pixels(), capture.size(),
+                                filter);
             if (sprite != nullptr && platform::cursor_in_client(window.hwnd())) {
                 d3d->draw_sprite(reinterpret_cast<std::uintptr_t>(game_cursor),
                                  core::cursor_rect({g_cursor_x.load(), g_cursor_y.load()},
@@ -472,6 +569,16 @@ void presenter_body() {
                       std::chrono::duration<double, std::milli>(t2 - t1).count());
             if (t2 - stats_start >= std::chrono::seconds(10)) {
                 platform::log("presenter: " + stats.take_line(10));
+                const auto shadow = rl_shadow::take_stats();
+                if (shadow.frames > 0) {
+                    char line[128];
+                    std::snprintf(line, sizeof line,
+                                  "presenter: 3D view x%d, %d renders, %.2f ms avg, %.2f ms max",
+                                  shadow.factor, shadow.frames, shadow.total_ms / shadow.frames,
+                                  shadow.max_ms);
+                    platform::log(line);
+                    platform::log("presenter: 3D view " + battle_overlay.take_line());
+                }
                 stats_start = t2;
             }
         };

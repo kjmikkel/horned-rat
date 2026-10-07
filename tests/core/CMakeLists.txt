@@ -4,6 +4,7 @@ add_executable(core_tests ini_test.cpp config_test.cpp log_format_test.cpp sampl
                           message_census_test.cpp cursor_math_test.cpp cursor_bitmap_test.cpp
                           frame_stats_test.cpp pause_clock_test.cpp
                           sound_pause_test.cpp playback_pause_test.cpp gamef_layout_test.cpp
-                          indexed_frame_test.cpp)
+                          render_scale_test.cpp overlay_test.cpp
+                          latest_test.cpp)
 target_link_libraries(core_tests PRIVATE hr_core hr_warnings Catch2::Catch2WithMain)
 catch_discover_tests(core_tests ADD_TAGS_AS_LABELS)

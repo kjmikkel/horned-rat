@@ -206,27 +206,30 @@ bool D3DPresenter::resize(core::Size size) {
     return create_target();
 }
 
-bool D3DPresenter::ensure_frame_texture(core::Size frame) {
-    if (frame_ && frame == frame_size_) {
+bool D3DPresenter::ensure_texture(ComPtr<ID3D11Texture2D>& texture,
+                                  ComPtr<ID3D11ShaderResourceView>& view, core::Size& current,
+                                  core::Size size) {
+    if (texture && size == current) {
         return true;
     }
-    frame_.Reset();
-    frame_view_.Reset();
+    texture.Reset();
+    view.Reset();
     D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = static_cast<UINT>(frame.width);
-    desc.Height = static_cast<UINT>(frame.height);
+    desc.Width = static_cast<UINT>(size.width);
+    desc.Height = static_cast<UINT>(size.height);
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &frame_)) ||
-        FAILED(device_->CreateShaderResourceView(frame_.Get(), nullptr, &frame_view_))) {
-        frame_.Reset();
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &texture)) ||
+        FAILED(device_->CreateShaderResourceView(texture.Get(), nullptr, &view))) {
+        texture.Reset();
+        view.Reset();
         return false;
     }
-    frame_size_ = frame;
+    current = size;
     return true;
 }
 
@@ -235,7 +238,7 @@ void D3DPresenter::render(const std::uint32_t* bgra, core::Size frame, core::Rec
     const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     context_->ClearRenderTargetView(target_.Get(), black);
     if (bgra == nullptr || frame.width <= 0 || frame.height <= 0 || dest.width <= 0 ||
-        dest.height <= 0 || !ensure_frame_texture(frame)) {
+        dest.height <= 0 || !ensure_texture(frame_, frame_view_, frame_size_, frame)) {
         return;
     }
     context_->UpdateSubresource(frame_.Get(), 0, nullptr, bgra, static_cast<UINT>(frame.width) * 4,
@@ -280,6 +283,30 @@ void D3DPresenter::draw_quad(ID3D11ShaderResourceView* view, core::Rect where,
 }
 
 void D3DPresenter::present(bool vsync) { swap_chain_->Present(vsync ? 1 : 0, 0); }
+
+bool D3DPresenter::set_overlay(const std::uint32_t* bgra, core::Size size) {
+    if (bgra == nullptr || size.width <= 0 || size.height <= 0 ||
+        !ensure_texture(overlay_, overlay_view_, overlay_size_, size)) {
+        return false;
+    }
+    context_->UpdateSubresource(overlay_.Get(), 0, nullptr, bgra, static_cast<UINT>(size.width) * 4,
+                                0);
+    return true;
+}
+
+void D3DPresenter::draw_overlay(core::Rect where, Filter filter) {
+    if (!overlay_view_ || where.width <= 0 || where.height <= 0) {
+        return;
+    }
+    const core::Size prescale = core::sharp_prescale(overlay_size_, where);
+    const Constants constants{
+        {static_cast<float>(overlay_size_.width), static_cast<float>(overlay_size_.height)},
+        {static_cast<float>(prescale.width), static_cast<float>(prescale.height)},
+        filter == Filter::Sharp ? 1u : 0u,
+        {}};
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+    draw_quad(overlay_view_.Get(), where, alpha_blend_.Get());
+}
 
 bool D3DPresenter::add_sprite(std::uintptr_t key, const std::uint32_t* bgra, core::Size size) {
     if (bgra == nullptr || size.width <= 0 || size.height <= 0) {
