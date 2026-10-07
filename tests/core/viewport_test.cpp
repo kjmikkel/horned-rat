@@ -49,3 +49,20 @@ TEST_CASE("keep_inside moves a window as little as possible to fit an area", "[v
     CHECK(keep_inside({50, 50, 4000, 3000}, area) == Point{0, 0});
     CHECK(keep_inside({1950, 10, 100, 100}, Rect{1920, 0, 1920, 1080}) == Point{1950, 10});
 }
+
+TEST_CASE("map_rect at 1:1 only offsets by the destination", "[viewport]") {
+    CHECK(map_rect({10, 20, 30, 40}, {640, 480}, {5, 7, 640, 480}) == Rect{15, 27, 30, 40});
+}
+
+TEST_CASE("map_rect scales by the destination", "[viewport]") {
+    CHECK(map_rect({10, 20, 30, 40}, {640, 480}, {0, 0, 1280, 960}) == Rect{20, 40, 60, 80});
+}
+
+TEST_CASE("map_rect rounds fractional edges", "[viewport]") {
+    // 2.25x: left 5 -> 11.25 -> 11, right 422 -> 949.5 -> 950, top 5 -> 11, bottom 301 -> 677
+    CHECK(map_rect({5, 5, 417, 296}, {640, 480}, {240, 0, 1440, 1080}) == Rect{251, 11, 939, 666});
+}
+
+TEST_CASE("map_rect of an empty content is empty", "[viewport]") {
+    CHECK(map_rect({1, 1, 2, 2}, {0, 0}, {0, 0, 100, 100}) == Rect{});
+}

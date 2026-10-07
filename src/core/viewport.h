@@ -12,6 +12,10 @@ Rect centered_rect(Size client, Size content);
 // clamping to the picture so points in the bars land on the nearest edge.
 Point to_content(Point client_point, Rect dest, Size content);
 
+// Where `r` (in content coordinates) lands when the content is drawn into `dest`; each edge is
+// scaled and rounded to the nearest pixel. Empty for an empty content.
+Rect map_rect(Rect r, Size content, Rect dest);
+
 // The screen position GetCursorPos must report so that the game's own ScreenToClient on its
 // (hidden) main window yields `content_point` inside `content_rect`.
 Point fake_cursor_screen(Point glue_client_origin, Rect content_rect, Point content_point);
