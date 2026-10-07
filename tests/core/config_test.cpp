@@ -19,6 +19,7 @@ TEST_CASE("every key is read", "[config]") {
     const auto r = load_config("[general]\nenabled = false\nbackground = pause\n"
                                "[display]\nmode = borderless\nwindow_size = 1920x1440\n"
                                "scale = integer\naspect = stretch\nvsync = no\ncursor = native\n"
+                               "render_scale = 2\n"
                                "[debug]\nlog = off\ngame_debug = 0\nmessage_census = on\n");
     CHECK(r.warnings.empty());
     CHECK_FALSE(r.config.enabled);
@@ -32,6 +33,7 @@ TEST_CASE("every key is read", "[config]") {
     CHECK_FALSE(r.config.game_debug);
     CHECK(r.config.message_census);
     CHECK(r.config.cursor == CursorMode::Native);
+    CHECK(r.config.render_scale == 2);
 }
 
 TEST_CASE("an invalid cursor mode warns and keeps scaled", "[config]") {
@@ -111,4 +113,24 @@ TEST_CASE("an out-of-range b1_spike warns and stays off", "[config]") {
     const auto r = load_config("[debug]\nb1_spike = 5\n");
     CHECK(r.config.b1_spike == 0);
     CHECK(r.warnings.size() == 1);
+}
+
+TEST_CASE("render_scale is auto by default", "[config]") {
+    CHECK(load_config("").config.render_scale == 0);
+}
+
+TEST_CASE("render_scale reads auto and 1 to 4", "[config]") {
+    CHECK(load_config("[display]\nrender_scale = 3\n").config.render_scale == 3);
+    CHECK(load_config("[display]\nrender_scale = 1\n").config.render_scale == 1);
+    const auto r = load_config("[display]\nrender_scale = AUTO\n");
+    CHECK(r.warnings.empty());
+    CHECK(r.config.render_scale == 0);
+}
+
+TEST_CASE("an invalid render_scale warns and stays auto", "[config]") {
+    for (const char* bad : {"0", "5", "sharp"}) {
+        const auto r = load_config(std::string("[display]\nrender_scale = ") + bad + "\n");
+        CHECK(r.config.render_scale == 0);
+        CHECK(r.warnings.size() == 1);
+    }
 }

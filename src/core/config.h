@@ -24,6 +24,7 @@ struct Config {
     AspectMode aspect = AspectMode::Keep4x3;
     bool vsync = true;
     CursorMode cursor = CursorMode::Scaled;
+    int render_scale = 0; // battle 3D view render factor: 0 = auto, 1 = off, 2..4 (Stage B)
     bool log = true;
     bool game_debug = true;
     bool message_census = false; // diagnostics: log the messages the game's windows receive
