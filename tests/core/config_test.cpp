@@ -98,3 +98,19 @@ TEST_CASE("the default file parses back to the defaults", "[config]") {
     CHECK(r.warnings.empty());
     CHECK(r.config == Config{});
 }
+
+TEST_CASE("b1_spike is off by default", "[config]") {
+    CHECK(load_config("").config.b1_spike == 0);
+}
+
+TEST_CASE("b1_spike accepts 0 to 3", "[config]") {
+    const auto r = load_config("[debug]\nb1_spike = 3\n");
+    CHECK(r.warnings.empty());
+    CHECK(r.config.b1_spike == 3);
+}
+
+TEST_CASE("an out-of-range b1_spike warns and stays off", "[config]") {
+    const auto r = load_config("[debug]\nb1_spike = 5\n");
+    CHECK(r.config.b1_spike == 0);
+    CHECK(r.warnings.size() == 1);
+}

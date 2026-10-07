@@ -27,6 +27,7 @@ struct Config {
     bool log = true;
     bool game_debug = true;
     bool message_census = false; // diagnostics: log the messages the game's windows receive
+    int b1_spike = 0;            // diagnostics: Stage B1.0 second render at this factor (0 = off)
 
     friend bool operator==(const Config&, const Config&) = default;
 };
