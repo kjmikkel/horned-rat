@@ -172,6 +172,12 @@ LRESULT CALLBACK PresenterWindow::proc(HWND window, UINT msg, WPARAM wparam, LPA
             return TRUE;
         }
         break;
+    case WM_ACTIVATEAPP:
+        // lparam is the thread that gains (or loses) activation. Moving to a game dialog on the
+        // game thread is no loss for the application.
+        self->input_.on_app_activation(wparam != FALSE ||
+                                       thread_in_this_process(static_cast<DWORD>(lparam)));
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_GETMINMAXINFO: {
@@ -214,6 +220,16 @@ bool cursor_in_client(HWND window) {
     RECT client{};
     GetClientRect(window, &client);
     return PtInRect(&client, cursor) != FALSE;
+}
+
+bool thread_in_this_process(DWORD thread_id) {
+    const HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, thread_id);
+    if (thread == nullptr) {
+        return false;
+    }
+    const bool ours = GetProcessIdOfThread(thread) == GetCurrentProcessId();
+    CloseHandle(thread);
+    return ours;
 }
 
 } // namespace hr::platform

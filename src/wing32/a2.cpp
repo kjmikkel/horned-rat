@@ -2,19 +2,25 @@
 
 #include "core/content_rect.h"
 #include "core/cursor_math.h"
+#include "core/frame_stats.h"
 #include "core/input_map.h"
+#include "core/luma.h"
+#include "core/pause_clock.h"
 #include "core/scaling.h"
 #include "core/viewport.h"
 #include "platform/child_input.h"
+#include "platform/crash_log.h"
 #include "platform/cursor_image.h"
 #include "platform/dpi_context.h"
 #include "platform/hidden_window.h"
 #include "platform/log.h"
 #include "platform/message_spy.h"
+#include "platform/message_wait.h"
 #include "platform/presenter_d3d11.h"
 #include "platform/presenter_window.h"
 #include "platform/window_capture.h"
 #include "platform/window_subclass.h"
+#include "wing32/hooks.h"
 #include "wing32/runtime.h"
 
 #include <atomic>
@@ -30,6 +36,8 @@
 #include <thread>
 #include <vector>
 
+#include <mmsystem.h>
+
 namespace hr::wing32::a2 {
 namespace {
 
@@ -40,6 +48,21 @@ std::atomic<HWND> g_presenter{nullptr};
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_stop{false};
+// One of our process's windows is in the foreground (presenter thread's WM_ACTIVATEAPP).
+std::atomic<bool> g_app_active{true};
+// background = pause (core::hold_game): the game has handled WM_ACTIVATEAPP(FALSE); the user
+// closed the presenter; the thread that owns Glue; signalled to re-check a held game thread.
+std::atomic<bool> g_told_inactive{false};
+std::atomic<bool> g_closing{false};
+std::atomic<DWORD> g_game_thread{0};
+std::atomic<int> g_held_threads{0}; // game threads held right now
+HANDLE g_wake = nullptr;
+// The game's clocks while it may be held (one per time base); guarded by g_clock_mutex.
+std::mutex g_clock_mutex;
+core::PauseClock g_tick_clock;
+core::PauseClock g_mm_clock;
+std::atomic<bool> g_ever_held{false};
+std::atomic<int> g_dialogs{0}; // open game message boxes
 std::atomic<HCURSOR> g_cursor{nullptr};
 std::atomic<std::uint32_t> g_cursor_sets{0}; // SetCursor calls by the game so far
 std::atomic<int> g_cursor_x{0};
@@ -70,7 +93,7 @@ std::string class_of(HWND window) {
     return name;
 }
 
-const char* activation_name(UINT msg) {
+const char* watched_name(UINT msg) {
     switch (msg) {
     case WM_ACTIVATE:
         return "WM_ACTIVATE";
@@ -82,6 +105,12 @@ const char* activation_name(UINT msg) {
         return "WM_SETFOCUS";
     case WM_KILLFOCUS:
         return "WM_KILLFOCUS";
+    case WM_SIZE:
+        return "WM_SIZE";
+    case WM_SHOWWINDOW:
+        return "WM_SHOWWINDOW";
+    case MM_MCINOTIFY: // wparam 1 successful, 2 superseded, 4 aborted, 8 failure
+        return "MM_MCINOTIFY";
     default:
         return nullptr;
     }
@@ -113,15 +142,17 @@ void store_content_rect(core::Rect r) {
 
 // Runs on the game thread for every message of the main window (A2 spec §5.4).
 LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC original) {
-    if (const char* name = activation_name(msg)) {
-        const WPARAM filtered = g_active ? core::filter_activation(msg, wparam) : wparam;
+    if (const char* name = watched_name(msg)) {
+        const WPARAM filtered = g_active ? core::game_activation(settings().config.background, msg,
+                                                                 wparam, g_app_active)
+                                         : wparam;
         platform::log(std::string("diag: Glue ") + name + " wparam=" + std::to_string(wparam) +
                       " -> " + std::to_string(filtered) +
                       " foreground=" + class_of(GetForegroundWindow()));
     }
     if (g_active) {
         if (msg == WM_ACTIVATE || msg == WM_ACTIVATEAPP) {
-            wparam = core::filter_activation(msg, wparam);
+            wparam = core::game_activation(settings().config.background, msg, wparam, g_app_active);
         } else if (msg == WM_WINDOWPOSCHANGING) {
             auto* const pos = reinterpret_cast<WINDOWPOS*>(lparam);
             if ((pos->flags & SWP_NOMOVE) == 0) {
@@ -133,6 +164,7 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
     if (msg == WM_DESTROY) {
         g_active = false;
         g_stop = true;
+        SetEvent(g_wake);
         // The game only posts WM_QUIT on its own exit path (the curtain dialog). Closed any other
         // way (the presenter's close button, Alt+F4), its GetMessage loop waited forever with no
         // window left (A2.2 smoke test; a WM_QUIT posted by hand let it exit normally). A second
@@ -141,7 +173,22 @@ LRESULT glue_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam, WNDPROC o
         PostQuitMessage(0);
         return result;
     }
-    return CallWindowProcA(original, window, msg, wparam, lparam);
+    const LRESULT result = CallWindowProcA(original, window, msg, wparam, lparam);
+    if (msg == WM_ACTIVATEAPP) {
+        // After the game's handler: it has stopped its music before the thread is held.
+        g_told_inactive = g_active && wparam == FALSE;
+    }
+    if (g_active && msg == WM_ACTIVATE && GetForegroundWindow() == window) {
+        // The invisible window is the foreground window (e.g. picked in alt-tab before it became
+        // a tool window): hand the foreground to the presenter. Not while a game message box is
+        // open: Windows activates Glue on the way to the box, which must keep the focus (A2.4).
+        const HWND presenter = g_presenter;
+        if (presenter != nullptr && g_dialogs == 0) {
+            platform::log("presenter: the hidden game window was activated, taking the focus back");
+            SetForegroundWindow(presenter);
+        }
+    }
+    return result;
 }
 
 // Runs on the presenter thread once the game thread has handled a forwarded WM_SETCURSOR
@@ -188,7 +235,11 @@ class Input final : public platform::PresenterInput {
             platform::post_key(g_glue, msg, wparam, lparam);
         }
     }
-    void on_close() override { PostMessageA(g_glue, WM_CLOSE, 0, 0); }
+    void on_close() override {
+        g_closing = true; // a held game thread must run to handle WM_CLOSE
+        SetEvent(g_wake);
+        PostMessageA(g_glue, WM_CLOSE, 0, 0);
+    }
     void on_tick() override {
         const platform::ScopedDpiContext game_dpi(g_game_dpi.load());
         if (tick_) {
@@ -196,6 +247,30 @@ class Input final : public platform::PresenterInput {
         }
     }
     HCURSOR cursor() override { return shown_; }
+    void on_app_activation(bool active) override {
+        if (g_app_active.exchange(active) == active) {
+            return;
+        }
+        SetEvent(g_wake); // a held game thread re-checks at once
+        const bool pause = settings().config.background == core::Background::Pause;
+        platform::log(std::string("presenter: ") +
+                      (active ? (pause ? "focused, game resumed" : "focused")
+                              : (pause ? "lost focus, game paused" : "lost focus, game runs on")));
+        if (!pause || !g_active) {
+            return;
+        }
+        // Glue is never the foreground window, so Windows does not tell it; send what vanilla
+        // gets, in vanilla's order. Posted: the presenter never waits for the game thread. The
+        // Glue subclass gives both messages the new state (core::game_activation).
+        const HWND glue = g_glue;
+        if (active) {
+            PostMessageA(glue, WM_ACTIVATEAPP, TRUE, 0);
+            PostMessageA(glue, WM_ACTIVATE, WA_ACTIVE, 0);
+        } else {
+            PostMessageA(glue, WM_ACTIVATE, WA_INACTIVE, 0);
+            PostMessageA(glue, WM_ACTIVATEAPP, FALSE, 0);
+        }
+    }
     HCURSOR shown_cursor() const { return shown_; }
     void set_shown_cursor(HCURSOR cursor) { shown_ = cursor; }
 
@@ -208,6 +283,7 @@ class Input final : public platform::PresenterInput {
 void stop_with_unhide(HWND glue, const platform::HiddenState& state, const std::string& reason) {
     g_active = false;
     g_gave_up = true;
+    SetEvent(g_wake); // a held game thread runs on as vanilla
     platform::unhide_window(glue, state);
     platform::log("presenter: game window unhidden (" + reason + ")");
 
@@ -289,15 +365,17 @@ void presenter_body() {
         core::Rect last_dest{-1, -1, -1, -1};
         auto last_good = Clock::now();
         auto stats_start = Clock::now();
-        double capture_ms = 0.0;
-        double present_ms = 0.0;
-        int frames = 0;
+        core::FrameStats stats;
+        const auto running_since = Clock::now();
+        core::BrightnessTrace brightness(5.0, 4.0); // diagnostics: the start-up dip
 
         // One frame: follow the window size, capture, scale, present. Runs from the loop below
         // and from on_tick while the user drags the window frame.
         const HCURSOR arrow = LoadCursorA(nullptr, IDC_ARROW);
         platform::log(std::string("presenter: cursor ") +
                       (config.cursor == core::CursorMode::Scaled ? "scaled" : "native"));
+        platform::log(std::string("presenter: background ") +
+                      (config.background == core::Background::Pause ? "pause" : "run"));
 
         // Cursor sprites by handle (spec §5.3); nullopt = could not be converted, shown natively.
         struct CursorSprite {
@@ -380,18 +458,21 @@ void presenter_body() {
             d3d->present(config.vsync);
             const auto t2 = Clock::now();
 
-            capture_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-            present_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
-            ++frames;
+            const double since = std::chrono::duration<double>(t2 - running_since).count();
+            if (brightness.running(since)) {
+                const core::Size size = capture.size();
+                const double luma = core::mean_luma(capture.pixels(), size.width, size.height);
+                if (brightness.should_log(since, luma)) {
+                    char line[64];
+                    std::snprintf(line, sizeof line, "diag: brightness %.1f", luma);
+                    platform::log(line);
+                }
+            }
+            stats.add(std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                      std::chrono::duration<double, std::milli>(t2 - t1).count());
             if (t2 - stats_start >= std::chrono::seconds(10)) {
-                char line[160];
-                std::snprintf(line, sizeof line,
-                              "presenter: %d frames in 10 s, capture %.2f ms, present %.2f ms",
-                              frames, capture_ms / frames, present_ms / frames);
-                platform::log(line);
+                platform::log("presenter: " + stats.take_line(10));
                 stats_start = t2;
-                capture_ms = present_ms = 0.0;
-                frames = 0;
             }
         };
         input.set_tick(frame);
@@ -438,13 +519,23 @@ void on_window_created(HWND window, HWND parent, DWORD style) {
         return;
     }
     g_glue = window;
+    g_game_thread = GetCurrentThreadId();
+    g_wake = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     // Hidden here, on the game thread before the game first shows the window, so it never flashes
     // on screen while the presenter starts up. Every presenter failure unhides it again.
     MONITORINFO monitor{};
     monitor.cbSize = sizeof monitor;
     GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor);
     g_hidden_state = platform::hide_window(window, monitor.rcWork);
+    // A thread that fetches no messages for ~5 s gets its windows replaced by a visible "Not
+    // Responding" ghost copy. background = pause holds the game thread for as long as the user
+    // is away, and the ghost of the hidden window showed as a small copy at the top left (A2.4).
+    DisableProcessWindowsGhosting();
     platform::log("presenter: starting for the main window (hidden at creation)");
+    // Diagnostics: the game handles its own crashes by exiting with the exception code, so the
+    // place of an access violation is logged first chance. Never destroyed.
+    static platform::AccessViolationLog crash_log(
+        5, [](const std::string& line) { platform::log("diag: " + line); });
     if (settings().config.message_census) {
         // On the game thread, so the spy sees that thread's windows. Never destroyed: the game's
         // windows live until the process ends.
@@ -477,6 +568,8 @@ void defer_display_mode(const DEVMODEA* mode, DWORD flags) {
     g_display_deferred = true;
 }
 
+void note_dialog(bool open) { g_dialogs += open ? 1 : -1; }
+
 HWND presenter_window() { return g_active ? g_presenter.load() : nullptr; }
 
 void fake_cursor_pos(POINT& out) {
@@ -499,6 +592,51 @@ bool mask_button(int vk) {
 void set_game_cursor(HCURSOR cursor) {
     g_cursor = cursor;
     ++g_cursor_sets;
+}
+
+namespace {
+bool holding() {
+    return core::hold_game(settings().config.background, g_active, g_app_active, g_told_inactive,
+                           g_closing);
+}
+} // namespace
+
+void hold_while_paused() {
+    // Every game thread with a message loop is held, not only Glue's: after "new game" the book
+    // screen animates from another thread (A2.4). The presenter thread never comes here (its
+    // PeekMessage is wing32's own import). The first thread in pauses sounds and clocks, the last
+    // one out resumes them.
+    if (g_game_thread == 0 || !holding()) {
+        return;
+    }
+    if (g_held_threads++ == 0) {
+        {
+            const std::lock_guard lock(g_clock_mutex);
+            g_tick_clock.hold(GetTickCount());
+            g_mm_clock.hold(timeGetTime());
+            g_ever_held = true;
+        }
+        pause_game_sounds(true); // the held game cannot stop its own looping sounds
+    }
+    const std::string thread = std::to_string(GetCurrentThreadId()) +
+                               (GetCurrentThreadId() == g_game_thread ? " (main)" : "");
+    platform::log("presenter: game held, thread " + thread);
+    platform::wait_handling_sent_messages(g_wake, &holding);
+    platform::log("presenter: game released, thread " + thread);
+    if (--g_held_threads == 0) {
+        pause_game_sounds(false);
+        const std::lock_guard lock(g_clock_mutex);
+        g_tick_clock.release(GetTickCount());
+        g_mm_clock.release(timeGetTime());
+    }
+}
+
+DWORD game_time(GameClock clock, DWORD real) {
+    if (!g_ever_held) {
+        return real;
+    }
+    const std::lock_guard lock(g_clock_mutex);
+    return (clock == GameClock::TickCount ? g_tick_clock : g_mm_clock).game_time(real);
 }
 
 void note_button(int vk, bool physically_down, bool masked) {

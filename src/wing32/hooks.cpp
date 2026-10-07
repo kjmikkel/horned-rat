@@ -6,12 +6,15 @@
 #include "core/display_mode.h"
 #include "core/game_modules.h"
 #include "core/input_map.h"
+#include "core/playback_pause.h"
 #include "core/sample_limiter.h"
+#include "core/sound_pause.h"
 #include "platform/dc_info.h"
 #include "platform/guard.h"
 #include "platform/iat_hook.h"
 #include "platform/log.h"
 #include "platform/modules.h"
+#include "platform/vtable_patch.h"
 #include "wing32/a2.h"
 #include "wing32/runtime.h"
 
@@ -20,7 +23,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -99,6 +104,7 @@ struct Originals {
     decltype(&::CreateWindowExA) CreateWindowExA;
     decltype(&::ChangeDisplaySettingsA) ChangeDisplaySettingsA;
     decltype(&::SetWindowPos) SetWindowPos;
+    decltype(&::ShowWindow) ShowWindow;
     decltype(&::GetCursorPos) GetCursorPos;
     decltype(&::SetCursorPos) SetCursorPos;
     decltype(&::ClipCursor) ClipCursor;
@@ -109,6 +115,9 @@ struct Originals {
     decltype(&::BeginPaint) BeginPaint;
     decltype(&::GetAsyncKeyState) GetAsyncKeyState;
     decltype(&::TranslateMessage) TranslateMessage;
+    decltype(&::PeekMessageA) PeekMessageA;
+    decltype(&::GetMessageA) GetMessageA;
+    decltype(&::GetTickCount) GetTickCount;
     decltype(&::SetCursor) SetCursor;
     decltype(&::LoadCursorA) LoadCursorA;
     decltype(&::SetClassLongA) SetClassLongA;
@@ -140,6 +149,7 @@ const Originals& originals() {
         get(user32, "CreateWindowExA", r.CreateWindowExA);
         get(user32, "ChangeDisplaySettingsA", r.ChangeDisplaySettingsA);
         get(user32, "SetWindowPos", r.SetWindowPos);
+        get(user32, "ShowWindow", r.ShowWindow);
         get(user32, "GetCursorPos", r.GetCursorPos);
         get(user32, "SetCursorPos", r.SetCursorPos);
         get(user32, "ClipCursor", r.ClipCursor);
@@ -150,6 +160,9 @@ const Originals& originals() {
         get(user32, "BeginPaint", r.BeginPaint);
         get(user32, "GetAsyncKeyState", r.GetAsyncKeyState);
         get(user32, "TranslateMessage", r.TranslateMessage);
+        get(user32, "PeekMessageA", r.PeekMessageA);
+        get(user32, "GetMessageA", r.GetMessageA);
+        get(kernel32, "GetTickCount", r.GetTickCount);
         get(user32, "SetCursor", r.SetCursor);
         get(user32, "LoadCursorA", r.LoadCursorA);
         get(user32, "SetClassLongA", r.SetClassLongA);
@@ -165,14 +178,50 @@ const Originals& originals() {
     return o;
 }
 
-// ---- DSOUND (diagnostics) ----
+// ---- DSOUND ----
 
+// Every DirectSound object and secondary buffer the game makes gets its vtable patched; each
+// vtable keeps its own originals (the game makes several DirectSound objects, A2.4).
+// IDirectSound: 2 Release, 3 CreateSoundBuffer, 5 DuplicateSoundBuffer, 6 SetCooperativeLevel.
+// IDirectSoundBuffer: 2 Release, 9 GetStatus, 12 Play, 18 Stop.
+platform::VtablePatches g_vtables;
+std::atomic<std::uint64_t> g_sound_buffers{0};
+// The game's secondary buffers, for background = pause.
+core::SoundPause g_sound_pause;
+
+template <typename Fn> Fn original_of(void* object, int slot) {
+    return reinterpret_cast<Fn>(g_vtables.original(object, slot));
+}
+
+using Release_t = ULONG(STDMETHODCALLTYPE*)(IUnknown*);
 using SetCooperativeLevel_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, HWND, DWORD);
 using CreateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPCDSBUFFERDESC,
                                                         LPDIRECTSOUNDBUFFER*, LPUNKNOWN);
-std::atomic<SetCooperativeLevel_t> g_set_cooperative_level{nullptr};
-std::atomic<CreateSoundBuffer_t> g_create_sound_buffer{nullptr};
-std::atomic<std::uint64_t> g_sound_buffers{0};
+using DuplicateSoundBuffer_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSound*, LPDIRECTSOUNDBUFFER,
+                                                           LPDIRECTSOUNDBUFFER*);
+using GetStatus_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*, LPDWORD);
+using Play_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*, DWORD, DWORD, DWORD);
+using Stop_t = HRESULT(STDMETHODCALLTYPE*)(IDirectSoundBuffer*);
+
+// Calls the original buffer functions: the hooks would call back into g_sound_pause, whose lock
+// is held while this runs.
+class DirectSoundControl final : public core::SoundPause::Control {
+  public:
+    std::optional<bool> stop_if_playing(std::uintptr_t id) override {
+        auto* const buffer = reinterpret_cast<IDirectSoundBuffer*>(id);
+        DWORD status = 0;
+        if (FAILED(original_of<GetStatus_t>(buffer, 9)(buffer, &status)) ||
+            (status & DSBSTATUS_PLAYING) == 0) {
+            return std::nullopt;
+        }
+        original_of<Stop_t>(buffer, 18)(buffer);
+        return (status & DSBSTATUS_LOOPING) != 0;
+    }
+    void play(std::uintptr_t id, bool looping) override {
+        auto* const buffer = reinterpret_cast<IDirectSoundBuffer*>(id);
+        original_of<Play_t>(buffer, 12)(buffer, 0, 0, looping ? DSBPLAY_LOOPING : 0);
+    }
+};
 
 std::string window_class(HWND window) {
     char name[64] = {};
@@ -180,6 +229,50 @@ std::string window_class(HWND window) {
         GetClassNameA(window, name, sizeof name);
     }
     return name;
+}
+
+std::uintptr_t id_of(const void* object) { return reinterpret_cast<std::uintptr_t>(object); }
+
+ULONG STDMETHODCALLTYPE hook_BufferRelease(IUnknown* self) {
+    // Under SoundPause's lock: a pause never stops a buffer that is being freed.
+    return g_sound_pause.release(id_of(self),
+                                 [&] { return original_of<Release_t>(self, 2)(self); });
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferGetStatus(IDirectSoundBuffer* self, LPDWORD status) {
+    // A buffer the pause stopped (or held back) still plays as far as the game knows.
+    if (const auto looping = g_sound_pause.reported_playing(id_of(self)); looping && status) {
+        *status = DSBSTATUS_PLAYING | (*looping ? DSBSTATUS_LOOPING : 0);
+        return DS_OK;
+    }
+    return original_of<GetStatus_t>(self, 9)(self, status);
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferPlay(IDirectSoundBuffer* self, DWORD reserved, DWORD priority,
+                                          DWORD flags) {
+    if (!g_sound_pause.allow_play(id_of(self), (flags & DSBPLAY_LOOPING) != 0)) {
+        return DS_OK; // played on resume
+    }
+    return original_of<Play_t>(self, 12)(self, reserved, priority, flags);
+}
+
+HRESULT STDMETHODCALLTYPE hook_BufferStop(IDirectSoundBuffer* self) {
+    g_sound_pause.note_stop(id_of(self));
+    return original_of<Stop_t>(self, 18)(self);
+}
+
+void track_sound_buffer(IDirectSoundBuffer* buffer, IDirectSound* device) {
+    g_vtables.patch(buffer, 2, reinterpret_cast<void*>(&hook_BufferRelease));
+    g_vtables.patch(buffer, 9, reinterpret_cast<void*>(&hook_BufferGetStatus));
+    g_vtables.patch(buffer, 12, reinterpret_cast<void*>(&hook_BufferPlay));
+    g_vtables.patch(buffer, 18, reinterpret_cast<void*>(&hook_BufferStop));
+    g_sound_pause.add(id_of(buffer), id_of(device));
+}
+
+ULONG STDMETHODCALLTYPE hook_DeviceRelease(IUnknown* self) {
+    // The last release of a DirectSound object frees its buffers without their own Release.
+    return g_sound_pause.release_device(id_of(self),
+                                        [&] { return original_of<Release_t>(self, 2)(self); });
 }
 
 HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND window, DWORD level) {
@@ -190,7 +283,7 @@ HRESULT STDMETHODCALLTYPE hook_SetCooperativeLevel(IDirectSound* self, HWND wind
                           window_class(window) + "' level=" + std::to_string(level));
         },
         [] {});
-    return g_set_cooperative_level.load()(self, window, level);
+    return original_of<SetCooperativeLevel_t>(self, 6)(self, window, level);
 }
 
 HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFERDESC desc,
@@ -210,20 +303,29 @@ HRESULT STDMETHODCALLTYPE hook_CreateSoundBuffer(IDirectSound* self, LPCDSBUFFER
             }
         },
         [] {});
+    const auto create = original_of<CreateSoundBuffer_t>(self, 3);
     if (desc == nullptr) {
-        return g_create_sound_buffer.load()(self, desc, buffer, outer);
+        return create(self, desc, buffer, outer);
     }
     DSBUFFERDESC copy = *desc;
     copy.dwFlags = core::with_global_focus(copy.dwFlags);
-    return g_create_sound_buffer.load()(self, &copy, buffer, outer);
+    const HRESULT result = create(self, &copy, buffer, outer);
+    if (SUCCEEDED(result) && buffer != nullptr && *buffer != nullptr &&
+        (desc->dwFlags & DSBCAPS_PRIMARYBUFFER) == 0) {
+        platform::guarded(
+            "CreateSoundBuffer track", [&] { track_sound_buffer(*buffer, self); }, [] {});
+    }
+    return result;
 }
 
-void patch_vtable_slot(void** vtable, int index, void* replacement) {
-    DWORD old = 0;
-    if (VirtualProtect(&vtable[index], sizeof(void*), PAGE_READWRITE, &old)) {
-        vtable[index] = replacement;
-        VirtualProtect(&vtable[index], sizeof(void*), old, &old);
+HRESULT STDMETHODCALLTYPE hook_DuplicateSoundBuffer(IDirectSound* self, LPDIRECTSOUNDBUFFER source,
+                                                    LPDIRECTSOUNDBUFFER* duplicate) {
+    const HRESULT result = original_of<DuplicateSoundBuffer_t>(self, 5)(self, source, duplicate);
+    if (SUCCEEDED(result) && duplicate != nullptr && *duplicate != nullptr) {
+        platform::guarded(
+            "DuplicateSoundBuffer track", [&] { track_sound_buffer(*duplicate, self); }, [] {});
     }
+    return result;
 }
 
 HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKNOWN outer) {
@@ -237,21 +339,147 @@ HRESULT WINAPI hook_DirectSoundCreate(LPCGUID guid, LPDIRECTSOUND* sound, LPUNKN
             platform::log(std::string("diag: DirectSoundCreate from ") +
                           platform::module_file_name_from_address(caller) + " -> " + text);
             if (SUCCEEDED(result) && sound != nullptr && *sound != nullptr) {
-                auto** const vtable = *reinterpret_cast<void***>(*sound);
-                // IDirectSound: 3 = CreateSoundBuffer, 6 = SetCooperativeLevel.
-                if (vtable[3] != reinterpret_cast<void*>(&hook_CreateSoundBuffer)) {
-                    g_create_sound_buffer = reinterpret_cast<CreateSoundBuffer_t>(vtable[3]);
-                    patch_vtable_slot(vtable, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
-                }
-                if (vtable[6] != reinterpret_cast<void*>(&hook_SetCooperativeLevel)) {
-                    g_set_cooperative_level = reinterpret_cast<SetCooperativeLevel_t>(vtable[6]);
-                    patch_vtable_slot(vtable, 6,
-                                      reinterpret_cast<void*>(&hook_SetCooperativeLevel));
-                }
+                IDirectSound* const device = *sound;
+                g_vtables.patch(device, 2, reinterpret_cast<void*>(&hook_DeviceRelease));
+                g_vtables.patch(device, 3, reinterpret_cast<void*>(&hook_CreateSoundBuffer));
+                g_vtables.patch(device, 5, reinterpret_cast<void*>(&hook_DuplicateSoundBuffer));
+                g_vtables.patch(device, 6, reinterpret_cast<void*>(&hook_SetCooperativeLevel));
             }
         },
         [] {});
     return result;
+}
+
+// ---- MIDI (background = pause) ----
+
+// The game's music plays in Windows' own threads, so a held game cannot pause it: the menus use
+// MCI sequencer devices (MIDI.dll, WHSHR.exe), the videos MIDI streams (OMNI000R.DLL). The hooks
+// record them; pause_game_sounds pauses and resumes them through wing32's own (unhooked) imports.
+core::PlaybackPause g_mci_pause;
+core::PlaybackPause g_stream_pause;
+
+// How the game last started each MCI device, so a resume plays on with the game's own end
+// notification (its tune repeats depend on it).
+struct MciPlay {
+    DWORD_PTR callback = 0;
+    bool notify = false;
+};
+std::mutex g_mci_mutex;
+std::map<MCIDEVICEID, MciPlay> g_mci_plays;
+
+class MciControl final : public core::PlaybackPause::Control {
+  public:
+    bool pause_if_playing(std::uintptr_t id) override {
+        const auto device = static_cast<MCIDEVICEID>(id);
+        MCI_STATUS_PARMS status{};
+        status.dwItem = MCI_STATUS_MODE;
+        return mciSendCommandA(device, MCI_STATUS, MCI_STATUS_ITEM,
+                               reinterpret_cast<DWORD_PTR>(&status)) == 0 &&
+               status.dwReturn == MCI_MODE_PLAY && mciSendCommandA(device, MCI_PAUSE, 0, 0) == 0;
+    }
+    void resume(std::uintptr_t id) override {
+        const auto device = static_cast<MCIDEVICEID>(id);
+        MciPlay play;
+        {
+            const std::lock_guard lock(g_mci_mutex);
+            play = g_mci_plays[device];
+        }
+        MCI_PLAY_PARMS params{};
+        params.dwCallback = play.callback;
+        mciSendCommandA(device, MCI_PLAY, play.notify ? MCI_NOTIFY : 0,
+                        reinterpret_cast<DWORD_PTR>(&params));
+    }
+};
+
+class StreamControl final : public core::PlaybackPause::Control {
+  public:
+    bool pause_if_playing(std::uintptr_t id) override {
+        return midiStreamPause(reinterpret_cast<HMIDISTRM>(id)) == MMSYSERR_NOERROR;
+    }
+    void resume(std::uintptr_t id) override { midiStreamRestart(reinterpret_cast<HMIDISTRM>(id)); }
+};
+
+const char* mci_command_name(UINT msg) {
+    switch (msg) {
+    case MCI_OPEN:
+        return "MCI_OPEN";
+    case MCI_CLOSE:
+        return "MCI_CLOSE";
+    case MCI_PLAY:
+        return "MCI_PLAY";
+    case MCI_STOP:
+        return "MCI_STOP";
+    case MCI_PAUSE:
+        return "MCI_PAUSE";
+    case MCI_SEEK:
+        return "MCI_SEEK";
+    default:
+        return nullptr;
+    }
+}
+
+MCIERROR WINAPI hook_mciSendCommandA(MCIDEVICEID device, UINT msg, DWORD_PTR flags,
+                                     DWORD_PTR param) {
+    const MCIERROR result = mciSendCommandA(device, msg, flags, param); // wing32's own import
+    platform::guarded(
+        "mciSendCommandA",
+        [&] {
+            if (const char* name = mci_command_name(msg)) {
+                platform::log(std::string("diag: mciSendCommandA(") + std::to_string(device) +
+                              ", " + name + ") -> " + std::to_string(result));
+            }
+            if (result != 0) {
+                return;
+            }
+            if (msg == MCI_OPEN && param != 0) {
+                g_mci_pause.opened(reinterpret_cast<const MCI_OPEN_PARMSA*>(param)->wDeviceID);
+            } else if (msg == MCI_CLOSE) {
+                g_mci_pause.closed(device);
+            } else if (msg == MCI_PLAY) {
+                const std::lock_guard lock(g_mci_mutex);
+                MciPlay& play = g_mci_plays[device];
+                play.notify = (flags & MCI_NOTIFY) != 0;
+                play.callback =
+                    param != 0 ? reinterpret_cast<const MCI_GENERIC_PARMS*>(param)->dwCallback : 0;
+            } else if (msg == MCI_STOP) {
+                g_mci_pause.set_running(device, false);
+            }
+        },
+        [] {});
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamOpen(LPHMIDISTRM stream, LPUINT device, DWORD count,
+                                    DWORD_PTR callback, DWORD_PTR instance, DWORD flags) {
+    const MMRESULT result = midiStreamOpen(stream, device, count, callback, instance, flags);
+    if (result == MMSYSERR_NOERROR && stream != nullptr) {
+        // A stream opens paused; it runs once the game restarts it.
+        g_stream_pause.opened(reinterpret_cast<std::uintptr_t>(*stream), false);
+    }
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamClose(HMIDISTRM stream) {
+    g_stream_pause.closed(reinterpret_cast<std::uintptr_t>(stream));
+    return midiStreamClose(stream);
+}
+
+MMRESULT WINAPI hook_midiStreamRestart(HMIDISTRM stream) {
+    const MMRESULT result = midiStreamRestart(stream);
+    if (result == MMSYSERR_NOERROR) {
+        g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), true);
+    }
+    return result;
+}
+
+MMRESULT WINAPI hook_midiStreamStop(HMIDISTRM stream) {
+    g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), false);
+    return midiStreamStop(stream);
+}
+
+MMRESULT WINAPI hook_midiStreamPause(HMIDISTRM stream) {
+    g_stream_pause.set_running(reinterpret_cast<std::uintptr_t>(stream), false);
+    return midiStreamPause(stream);
 }
 
 // ---- Dialogs and exit ----
@@ -265,8 +493,12 @@ int WINAPI hook_MessageBoxA(HWND owner, LPCSTR text, LPCSTR caption, UINT type) 
                           (presenter != nullptr ? " -> presenter" : ""));
         },
         [] {});
-    // Owned by the presenter, the box appears on top of it and disables it while open (A2.1).
-    return originals().MessageBoxA(presenter != nullptr ? presenter : owner, text, caption, type);
+    // Owned by the presenter, the box appears on top of it (A2.1).
+    a2::note_dialog(true);
+    const int result =
+        originals().MessageBoxA(presenter != nullptr ? presenter : owner, text, caption, type);
+    a2::note_dialog(false);
+    return result;
 }
 
 void WINAPI hook_ExitProcess(UINT code) {
@@ -508,6 +740,26 @@ BOOL WINAPI hook_SetWindowPos(HWND window, HWND after, int x, int y, int w, int 
         call);
 }
 
+// Diagnostics (A2.4): how the game hides, minimises or restores its top-level windows, for
+// example when it loses activation. Child windows are shown constantly and are not logged.
+BOOL WINAPI hook_ShowWindow(HWND window, int command) {
+    const void* caller = _ReturnAddress();
+    const BOOL result = originals().ShowWindow(window, command);
+    const DWORD error = GetLastError();
+    platform::guarded(
+        "ShowWindow",
+        [&] {
+            if ((GetWindowLongPtrA(window, GWL_STYLE) & WS_CHILD) == 0) {
+                platform::log("diag: ShowWindow(class '" + window_class(window) + "', " +
+                              std::to_string(command) + ") -> " + std::to_string(result) +
+                              " from " + platform::module_file_name_from_address(caller));
+            }
+        },
+        [] {});
+    SetLastError(error);
+    return result;
+}
+
 BOOL WINAPI hook_GetCursorPos(LPPOINT point) {
     const void* caller = _ReturnAddress();
     BOOL result = TRUE;
@@ -537,6 +789,33 @@ BOOL WINAPI hook_TranslateMessage(const MSG* msg) {
         [&] { return msg != nullptr && core::skip_translate(a2::active(), msg->message); },
         [] { return false; });
     return skip ? FALSE : originals().TranslateMessage(msg);
+}
+
+// background = pause (A2.4): the game's message loop is where its thread is held while the
+// presenter is not focused.
+BOOL WINAPI hook_PeekMessageA(LPMSG msg, HWND window, UINT first, UINT last, UINT remove) {
+    platform::guarded("PeekMessageA", [] { a2::hold_while_paused(); }, [] {});
+    return originals().PeekMessageA(msg, window, first, last, remove);
+}
+
+BOOL WINAPI hook_GetMessageA(LPMSG msg, HWND window, UINT first, UINT last) {
+    platform::guarded("GetMessageA", [] { a2::hold_while_paused(); }, [] {});
+    return originals().GetMessageA(msg, window, first, last);
+}
+
+// The game's clocks stand still while it is held, so it does not catch up on return.
+DWORD WINAPI hook_GetTickCount() {
+    const DWORD real = originals().GetTickCount();
+    return platform::guarded(
+        "GetTickCount", [&] { return a2::game_time(a2::GameClock::TickCount, real); },
+        [&] { return real; });
+}
+
+DWORD WINAPI hook_timeGetTime() {
+    const DWORD real = timeGetTime(); // wing32's own import: not hooked
+    return platform::guarded(
+        "timeGetTime", [&] { return a2::game_time(a2::GameClock::Multimedia, real); },
+        [&] { return real; });
 }
 
 SHORT WINAPI hook_GetAsyncKeyState(int vk) {
@@ -796,6 +1075,7 @@ const HookSpec kHooks[] = {
     {"GDI32.dll", "SetDIBitsToDevice", reinterpret_cast<void*>(&hook_SetDIBitsToDevice)},
     {"USER32.dll", "CreateWindowExA", reinterpret_cast<void*>(&hook_CreateWindowExA)},
     {"USER32.dll", "SetWindowPos", reinterpret_cast<void*>(&hook_SetWindowPos)},
+    {"USER32.dll", "ShowWindow", reinterpret_cast<void*>(&hook_ShowWindow)},
     {"USER32.dll", "GetCursorPos", reinterpret_cast<void*>(&hook_GetCursorPos)},
     {"USER32.dll", "SetCursorPos", reinterpret_cast<void*>(&hook_SetCursorPos)},
     {"USER32.dll", "ClipCursor", reinterpret_cast<void*>(&hook_ClipCursor)},
@@ -806,6 +1086,16 @@ const HookSpec kHooks[] = {
     {"USER32.dll", "BeginPaint", reinterpret_cast<void*>(&hook_BeginPaint)},
     {"USER32.dll", "GetAsyncKeyState", reinterpret_cast<void*>(&hook_GetAsyncKeyState)},
     {"USER32.dll", "TranslateMessage", reinterpret_cast<void*>(&hook_TranslateMessage)},
+    {"USER32.dll", "PeekMessageA", reinterpret_cast<void*>(&hook_PeekMessageA)},
+    {"USER32.dll", "GetMessageA", reinterpret_cast<void*>(&hook_GetMessageA)},
+    {"KERNEL32.dll", "GetTickCount", reinterpret_cast<void*>(&hook_GetTickCount)},
+    {"WINMM.dll", "timeGetTime", reinterpret_cast<void*>(&hook_timeGetTime)},
+    {"WINMM.dll", "mciSendCommandA", reinterpret_cast<void*>(&hook_mciSendCommandA)},
+    {"WINMM.dll", "midiStreamOpen", reinterpret_cast<void*>(&hook_midiStreamOpen)},
+    {"WINMM.dll", "midiStreamClose", reinterpret_cast<void*>(&hook_midiStreamClose)},
+    {"WINMM.dll", "midiStreamRestart", reinterpret_cast<void*>(&hook_midiStreamRestart)},
+    {"WINMM.dll", "midiStreamStop", reinterpret_cast<void*>(&hook_midiStreamStop)},
+    {"WINMM.dll", "midiStreamPause", reinterpret_cast<void*>(&hook_midiStreamPause)},
     {"USER32.dll", "SetCursor", reinterpret_cast<void*>(&hook_SetCursor)},
     {"USER32.dll", "LoadCursorA", reinterpret_cast<void*>(&hook_LoadCursorA)},
     {"USER32.dll", "SetClassLongA", reinterpret_cast<void*>(&hook_SetClassLongA)},
@@ -855,6 +1145,27 @@ void install_hooks() {
 
 void log_wing_bit_blt(const void* caller, HDC dest, int x, int y, int width, int height) {
     log_wing_blit("WinGBitBlt", g_counters.wing_bit_blt, caller, dest, x, y, width, height);
+}
+
+void pause_game_sounds(bool paused) {
+    DirectSoundControl control;
+    if (paused) {
+        const auto counts = g_sound_pause.pause(control);
+        MciControl mci;
+        StreamControl streams;
+        const int devices = g_mci_pause.pause(mci);
+        const int midi = g_stream_pause.pause(streams);
+        platform::log("presenter: stopped " + std::to_string(counts.stopped) + " of " +
+                      std::to_string(counts.known) + " known sound buffers, paused " +
+                      std::to_string(devices) + " MCI devices and " + std::to_string(midi) +
+                      " MIDI streams");
+    } else {
+        g_sound_pause.resume(control);
+        MciControl mci;
+        StreamControl streams;
+        g_mci_pause.resume(mci);
+        g_stream_pause.resume(streams);
+    }
 }
 
 void log_wing_stretch_blt(const void* caller, HDC dest, int x, int y, int width, int height) {

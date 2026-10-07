@@ -8,6 +8,7 @@
 #include <vector>
 
 using Catch::Approx;
+using hr::core::BrightnessTrace;
 using hr::core::luma_csv_row;
 using hr::core::mean_luma;
 
@@ -32,4 +33,20 @@ TEST_CASE("probe rows carry the run and the mode so several runs can share one f
     CHECK(luma_csv_row("2026-10-06 08:30:00", "a2", 1.23456, 127.5) ==
           "2026-10-06 08:30:00,a2,1.2346,127.50");
     CHECK(luma_csv_row("r", "vanilla", 0.0, 0.0) == "r,vanilla,0.0000,0.00");
+}
+
+TEST_CASE("the brightness trace logs the first frame and changes of at least the step", "[luma]") {
+    BrightnessTrace trace(5.0, 4.0);
+    CHECK(trace.should_log(0.0, 46.0));
+    CHECK_FALSE(trace.should_log(0.1, 48.0)); // +2: below the step
+    CHECK(trace.should_log(0.2, 15.0));       // the dip
+    CHECK_FALSE(trace.should_log(0.3, 18.9)); // +3.9 since the last logged value
+    CHECK(trace.should_log(0.4, 53.6));
+}
+
+TEST_CASE("the brightness trace stops after its duration", "[luma]") {
+    BrightnessTrace trace(5.0, 4.0);
+    CHECK(trace.running(4.99));
+    CHECK_FALSE(trace.running(5.0));
+    CHECK_FALSE(trace.should_log(5.0, 100.0));
 }

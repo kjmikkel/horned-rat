@@ -26,6 +26,10 @@ void set_game_cursor(HCURSOR cursor);
 // The presenter window while active (owner for the game's message boxes), else nullptr.
 HWND presenter_window();
 
+// MessageBoxA: a game message box opens (true) or closes (false). While one is open the presenter
+// leaves the focus alone: the box must keep it.
+void note_dialog(bool open);
+
 // True from the game's main window creation until the presenter gives up: the presenter owns
 // the display, so the game's display-mode changes are deferred (core::defer_display_change).
 bool owns_display();
@@ -33,6 +37,15 @@ bool owns_display();
 // Records a deferred display-mode request (nullptr = restore the registry mode). If the presenter
 // gives up, the last one is applied so the game gets the screen it asked for.
 void defer_display_mode(const DEVMODEA* mode, DWORD flags);
+
+// background = pause: called by the game's message loop (PeekMessageA / GetMessageA). On the
+// game thread, holds it while the presenter is not focused (core::hold_game), still handling
+// messages sent to it.
+void hold_while_paused();
+
+// The game's clocks with the time the game was held taken out (core::PauseClock).
+enum class GameClock { TickCount, Multimedia };
+DWORD game_time(GameClock clock, DWORD real);
 
 // Diagnostics: logs when the physical state or the masking of a mouse button changes.
 void note_button(int vk, bool physically_down, bool masked);
