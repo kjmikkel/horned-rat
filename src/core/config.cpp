@@ -42,6 +42,14 @@ std::optional<Size> parse_size(std::string_view v) {
     return size;
 }
 
+std::optional<int> parse_int_in(std::string_view v, int low, int high) {
+    int value = 0;
+    if (!parse_int(v, value) || value < low || value > high) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 template <typename E>
 std::optional<E> parse_choice(std::string_view v,
                               std::initializer_list<std::pair<std::string_view, E>> choices) {
@@ -106,6 +114,8 @@ constexpr Field kFields[] = {
      [](Config& c, std::string_view v) { return assign(c.game_debug, parse_bool(v)); }},
     {"debug.message_census",
      [](Config& c, std::string_view v) { return assign(c.message_census, parse_bool(v)); }},
+    {"debug.b1_spike",
+     [](Config& c, std::string_view v) { return assign(c.b1_spike, parse_int_in(v, 0, 3)); }},
 };
 
 const Field* find_field(std::string_view name) {
