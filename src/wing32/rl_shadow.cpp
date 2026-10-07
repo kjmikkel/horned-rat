@@ -57,6 +57,7 @@ double g_ms_max = 0;
 bool g_dumped = false;
 bool g_logged_half = false;
 bool g_logged_front = false;
+int g_palette_calls = 0;
 
 template <typename F> F fn(u32 rva) { return reinterpret_cast<F>(g_base + rva); }
 
@@ -68,6 +69,7 @@ template <typename T> T read(std::uintptr_t at) {
 
 void __cdecl on_palette(void*, void* arg, int index, int r, int g, int b) {
     auto* shadow = static_cast<Shadow*>(arg);
+    ++g_palette_calls;
     if (index >= 0 && index < 256) {
         shadow->palette[static_cast<std::size_t>(index)] =
             (static_cast<std::uint32_t>(r & 0xFF) << 16) |
@@ -217,18 +219,18 @@ void log_viewport_once(std::uintptr_t w) {
     }
 }
 
-void write_bmp(const Shadow& s) {
-    const int h = s.height * s.k;
-    const auto path = module_dir() / ("horned-rat-b1-k" + std::to_string(s.k) + ".bmp");
+void write_bmp(const std::string& name, const std::uint8_t* bits, int stride, int width, int height,
+               const std::array<std::uint32_t, 256>& palette) {
+    const auto path = module_dir() / ("horned-rat-b1-" + name + ".bmp");
     BITMAPINFOHEADER info{};
     info.biSize = sizeof info;
-    info.biWidth = s.stride;
-    info.biHeight = -h; // top-down
+    info.biWidth = stride;
+    info.biHeight = -height; // top-down
     info.biPlanes = 1;
     info.biBitCount = 8;
     info.biClrUsed = 256;
     const DWORD palette_bytes = 256 * 4;
-    const DWORD pixel_bytes = static_cast<DWORD>(s.stride) * static_cast<DWORD>(h);
+    const DWORD pixel_bytes = static_cast<DWORD>(stride) * static_cast<DWORD>(height);
     BITMAPFILEHEADER file{};
     file.bfType = 0x4D42;
     file.bfOffBits = sizeof file + sizeof info + palette_bytes;
@@ -236,37 +238,74 @@ void write_bmp(const Shadow& s) {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(&file), sizeof file);
     out.write(reinterpret_cast<const char*>(&info), sizeof info);
-    for (const std::uint32_t c : s.palette) {
+    for (const std::uint32_t c : palette) {
         const RGBQUAD q{static_cast<BYTE>(c & 0xFF), static_cast<BYTE>((c >> 8) & 0xFF),
                         static_cast<BYTE>((c >> 16) & 0xFF), 0};
         out.write(reinterpret_cast<const char*>(&q), sizeof q);
     }
-    out.write(reinterpret_cast<const char*>(s.bits.data()), pixel_bytes);
-    platform::log("b1 spike: wrote " + path.string() + " (" + std::to_string(s.width * s.k) + "x" +
-                  std::to_string(h) + ")");
+    out.write(reinterpret_cast<const char*>(bits), pixel_bytes);
+    platform::log("b1 spike: wrote " + path.string() + " (" + std::to_string(width) + "x" +
+                  std::to_string(height) + ")");
 }
 
-void compare_with_game(std::uintptr_t w, HDC src) {
-    const auto& l = *g_layout;
+std::array<std::uint32_t, 256> game_palette(HDC src) {
     std::array<RGBQUAD, 256> quads{};
     GetDIBColorTable(src, 0, 256, quads.data());
-    std::array<std::uint32_t, 256> game_palette{};
+    std::array<std::uint32_t, 256> palette{};
     for (std::size_t i = 0; i < 256; ++i) {
-        game_palette[i] = (static_cast<std::uint32_t>(quads[i].rgbRed) << 16) |
-                          (static_cast<std::uint32_t>(quads[i].rgbGreen) << 8) | quads[i].rgbBlue;
+        palette[i] = (static_cast<std::uint32_t>(quads[i].rgbRed) << 16) |
+                     (static_cast<std::uint32_t>(quads[i].rgbGreen) << 8) | quads[i].rgbBlue;
     }
+    return palette;
+}
+
+std::array<std::uint32_t, 256> identity_palette() {
+    std::array<std::uint32_t, 256> palette{};
+    for (std::size_t i = 0; i < 256; ++i) {
+        palette[i] = static_cast<std::uint32_t>(i);
+    }
+    return palette;
+}
+
+// Diagnostics: compares our frame with the game's by our palette, by the game's palette (shared
+// colour allocation) and by index.
+void compare_with_game(std::uintptr_t w, HDC src) {
+    const auto& l = *g_layout;
+    const auto game_pal = game_palette(src);
+    static const auto identity = identity_palette();
     const auto* game_bits =
         reinterpret_cast<const std::uint8_t*>(read<std::uintptr_t>(w + l.w_bits));
     const int game_stride = static_cast<int>(read<std::uint32_t>(w + l.w_device_desc));
     const Shadow& s = *g_shadow;
-    const int differing =
-        core::count_differing_pixels({game_bits, game_stride, &game_palette},
-                                     {s.bits.data(), s.stride, &s.palette}, s.width, s.height);
+    const core::IndexedFrame game{game_bits, game_stride, &game_pal};
+    const int by_own = core::count_differing_pixels(game, {s.bits.data(), s.stride, &s.palette},
+                                                    s.width, s.height);
+    const int by_game =
+        core::count_differing_pixels(game, {s.bits.data(), s.stride, &game_pal}, s.width, s.height);
+    const int by_index =
+        core::count_differing_pixels({game_bits, game_stride, &identity},
+                                     {s.bits.data(), s.stride, &identity}, s.width, s.height);
     if (g_frames <= 3 || g_frames % 50 == 0) {
-        platform::log("b1 spike: frame " + std::to_string(g_frames) + ", " +
-                      std::to_string(differing) + " of " + std::to_string(s.width * s.height) +
-                      " pixels differ");
+        platform::log("b1 spike: frame " + std::to_string(g_frames) + ", of " +
+                      std::to_string(s.width * s.height) +
+                      " pixels differ: " + std::to_string(by_own) + " (our palette), " +
+                      std::to_string(by_game) + " (game palette), " + std::to_string(by_index) +
+                      " (index); " + std::to_string(g_palette_calls) + " palette callbacks");
     }
+}
+
+void dump_frames(std::uintptr_t w, HDC src) {
+    const auto& l = *g_layout;
+    const Shadow& s = *g_shadow;
+    const auto game_pal = game_palette(src);
+    const std::string k = "k" + std::to_string(s.k);
+    write_bmp(k, s.bits.data(), s.stride, s.width * s.k, s.height * s.k, s.palette);
+    write_bmp(k + "-game-palette", s.bits.data(), s.stride, s.width * s.k, s.height * s.k,
+              game_pal);
+    const auto* game_bits =
+        reinterpret_cast<const std::uint8_t*>(read<std::uintptr_t>(w + l.w_bits));
+    const int game_stride = static_cast<int>(read<std::uint32_t>(w + l.w_device_desc));
+    write_bmp("game", game_bits, game_stride, s.width, s.height, game_pal);
 }
 
 void render(HDC src) {
@@ -330,7 +369,7 @@ void render(HDC src) {
     }
     if (!g_dumped && g_frames == 20) {
         g_dumped = true;
-        write_bmp(*s);
+        dump_frames(w, src);
     }
 }
 
