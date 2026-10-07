@@ -423,25 +423,6 @@ void render(HDC src) {
     }
     if (k == 1) {
         compare_with_game(w, src);
-        if (g_frames == 100) {
-            // Experiment: does the device's shade table (+0x50..+0x163) explain what is left?
-            const u32 game_device = read<u32>(w + l.w_device);
-            const u32 our_device = s->device;
-            const bool copied_table = seh([&] {
-                int g = 0;
-                int o = 0;
-                const auto* type = reinterpret_cast<const void*>(g_base + l.device_type);
-                if (fn<Lookup>(l.lookup_object)(&g, game_device, type) == 0 &&
-                    fn<Lookup>(l.lookup_object)(&o, our_device, type) == 0 && g != 0 && o != 0) {
-                    std::memcpy(
-                        reinterpret_cast<void*>(static_cast<std::uintptr_t>(o) + 0x50),
-                        reinterpret_cast<const void*>(static_cast<std::uintptr_t>(g) + 0x50),
-                        0x164 - 0x50);
-                }
-            });
-            platform::log(std::string("b1 spike: copied the game device's +0x50..+0x163") +
-                          (copied_table ? "" : " (exception)"));
-        }
         if (g_frames == 5) {
             log_object_diff("viewport", read<u32>(w + l.w_viewport), s->viewport, l.viewport_type,
                             0x240);

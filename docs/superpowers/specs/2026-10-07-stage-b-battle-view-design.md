@@ -76,11 +76,12 @@ In the `WinGBitBlt` / `WinGStretchBlt` hooks, when the source DC has the 3D view
 1. Read the view object (layout, detail divisor, viewport, camera and scene frames) from the
    battle window's data block.
 2. If k, the layout or the battle changed, (re)create our device on our own 8-bit buffer of
-   `align4(w·k) × h·k`, with our own palette callback, and a viewport on the game's camera frame,
-   through the same internal functions the game uses for its own device.
+   `align4(w)·k × h·k`, and a viewport on the game's camera frame configured `align4(w)·k` wide
+   like the game's, through the same internal functions the game uses for its own device. (The
+   ramp palette is shared by all devices, so our pixels are the game's palette indices; B1.0.)
 3. Copy the game viewport's current extents and field of view to ours.
 4. Clear and render the game's scene frame through our viewport.
-5. Publish {our buffer, its palette, the game's 1× frame and palette, w, h, k, time} to the
+5. Publish {our buffer, the game's 1× frame, the game's palette, w, h, k, time} to the
    presenter (double-buffered, swapped under a mutex).
 6. Call the original blit (always, also after a failure in 1–5).
 
@@ -143,6 +144,9 @@ Red/green TDD for every behaviour (project rule).
   renders the game's scene. **Exit:** our frame is pixel-identical to the game's after palette
   mapping; then 2× and 3× render without errors; render time measured. Results in
   `docs/re-notes/b1-0-exit.md`; the user decides whether B1.1 goes ahead.
+  **Result (2026-10-07):** passed: 2 of 123 432 pixels differ at 1×; 1.5 ms at 2×, 2.8 ms at
+  3×. Two corrections for B1.1: the ramp palette is shared (our frame uses the game's palette;
+  no own palette callback), and the viewport is configured 4-aligned (`align4(w)·k` wide).
 - **B1.1 — Hi-res overlay.** Publishing, the presenter overlay with the mask, `render_scale`, the
   slow-render fallback.
 - **B1.2 — Polish.** Layout switch (both layouts), half-detail divisor, performance line, smoke
@@ -156,7 +160,7 @@ Red/green TDD for every behaviour (project rule).
 
 | Risk | Mitigation |
 |---|---|
-| Two devices share Reality Lab state (ramp colour allocation, caches) and disturb the game's render | B1.0 compares the game's frame with and without our device; own palette callback per device |
+| Two devices share Reality Lab state (ramp colour allocation, caches) and disturb the game's render | B1.0: the game's frame is unchanged; the colour allocation is shared, and our frame uses the game's palette |
 | Calling internal functions by address on a different build | SHA-256 gate (§7) |
 | Shadow render too slow on weak CPUs | Measured in B1.0; automatic k reduction; `render_scale` key |
 | Mask misfires (e.g. palette animation between render and capture) | Falls back to vanilla pixels; visible only as momentary softness |
