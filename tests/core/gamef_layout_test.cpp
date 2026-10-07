@@ -15,6 +15,7 @@ TEST_CASE("the GOG build of GAMEF.DLL has a layout", "[gamef_layout]") {
     CHECK(layout->create_viewport == 0x57BF0);
     CHECK(layout->render_viewport == 0x583C0);
     CHECK(layout->viewport_type == 0xFB0E8);
+    CHECK(layout->device_type == 0xFAFC0);
     CHECK(layout->w_viewport == 0x32874);
     CHECK(layout->w_device_desc == 0x32878);
     CHECK(layout->vp_back == 0xC4);

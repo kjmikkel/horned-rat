@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -135,7 +136,10 @@ bool create_shadow(std::uintptr_t w, int width, int height, int k) {
     shadow->width = width;
     shadow->height = height;
     shadow->k = k;
-    shadow->stride = ((width * k + 3) / 4) * 4;
+    // At k = 1 the device is as wide as the game's (the wide layout's 624), so the two renders
+    // differ only in being two devices.
+    shadow->stride = k == 1 ? static_cast<int>(read<std::uint32_t>(w + l.w_device_desc))
+                            : ((width * k + 3) / 4) * 4;
     shadow->bits.assign(
         static_cast<std::size_t>(shadow->stride) * static_cast<std::size_t>(height * k), 0);
     std::memcpy(shadow->desc.data(), reinterpret_cast<const void*>(w + l.w_device_desc),
@@ -217,6 +221,56 @@ void log_viewport_once(std::uintptr_t w) {
                       std::to_string(read<float>(o + l.vp_plane_c)) + " " +
                       std::to_string(read<float>(o + l.vp_plane_d)));
     }
+}
+
+// Diagnostics: logs every dword that differs between the game's object and ours (first
+// `bytes` bytes), to find settings the copy misses.
+void log_object_diff(const char* what, u32 game_handle, u32 our_handle, u32 type_rva,
+                     std::size_t bytes) {
+    const auto& l = *g_layout;
+    std::vector<std::uint8_t> game(bytes);
+    std::vector<std::uint8_t> ours(bytes);
+    bool found = false;
+    std::uint8_t* game_out = game.data();
+    std::uint8_t* our_out = ours.data();
+    const bool ok = seh([&] {
+        int g = 0;
+        int o = 0;
+        const auto* type = reinterpret_cast<const void*>(g_base + type_rva);
+        if (fn<Lookup>(l.lookup_object)(&g, game_handle, type) == 0 &&
+            fn<Lookup>(l.lookup_object)(&o, our_handle, type) == 0 && g != 0 && o != 0) {
+            std::memcpy(game_out, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(g)),
+                        bytes);
+            std::memcpy(our_out, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(o)),
+                        bytes);
+            found = true;
+        }
+    });
+    if (!ok || !found) {
+        platform::log(std::string("b1 spike: ") + what + " objects not readable");
+        return;
+    }
+    int lines = 0;
+    for (std::size_t at = 0; at + 4 <= bytes && lines < 80; at += 4) {
+        std::uint32_t a = 0;
+        std::uint32_t b = 0;
+        std::memcpy(&a, game.data() + at, 4);
+        std::memcpy(&b, ours.data() + at, 4);
+        if (a != b) {
+            float fa = 0;
+            float fb = 0;
+            std::memcpy(&fa, &a, 4);
+            std::memcpy(&fb, &b, 4);
+            char line[160];
+            std::snprintf(line, sizeof line,
+                          "b1 spike: %s +0x%03zx game 0x%08x (%g) ours 0x%08x (%g)", what, at, a,
+                          static_cast<double>(fa), b, static_cast<double>(fb));
+            platform::log(line);
+            ++lines;
+        }
+    }
+    platform::log(std::string("b1 spike: ") + what + " diff done, " + std::to_string(lines) +
+                  " differing dwords");
 }
 
 void write_bmp(const std::string& name, const std::uint8_t* bits, int stride, int width, int height,
@@ -366,6 +420,11 @@ void render(HDC src) {
     }
     if (k == 1) {
         compare_with_game(w, src);
+        if (g_frames == 5) {
+            log_object_diff("viewport", read<u32>(w + l.w_viewport), s->viewport, l.viewport_type,
+                            0x240);
+            log_object_diff("device", read<u32>(w + l.w_device), s->device, l.device_type, 0x300);
+        }
     }
     if (!g_dumped && g_frames == 20) {
         g_dumped = true;

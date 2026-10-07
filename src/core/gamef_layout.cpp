@@ -24,6 +24,7 @@ constexpr GamefLayout kGog{
     .destroy_object = 0x56520,
     .lookup_object = 0x56A20,
     .viewport_type = 0xFB0E8,
+    .device_type = 0xFAFC0,
     .w_scene = 0x32860,
     .w_camera = 0x32868,
     .w_device = 0x32870,

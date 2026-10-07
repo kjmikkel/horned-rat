@@ -26,6 +26,7 @@ struct GamefLayout {
     std::uint32_t destroy_object;
     std::uint32_t lookup_object;
     std::uint32_t viewport_type; // type tag address passed to lookup_object
+    std::uint32_t device_type;   // likewise for a device
     // Battle window data block.
     std::uint32_t w_scene;
     std::uint32_t w_camera;
