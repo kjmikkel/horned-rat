@@ -16,6 +16,7 @@
 #include "platform/modules.h"
 #include "platform/vtable_patch.h"
 #include "wing32/a2.h"
+#include "wing32/rl_shadow.h"
 #include "wing32/runtime.h"
 
 #include <intrin.h>
@@ -717,6 +718,7 @@ HWND WINAPI hook_CreateWindowExA(DWORD ex_style, LPCSTR class_name, LPCSTR windo
                           rect(x, y, w, h) + " parent=" + hex(parent) + " -> " + hex(result));
             if (result != nullptr) {
                 a2::on_window_created(result, parent, style);
+                rl_shadow::on_window_created(result, cls);
             }
         },
         [] {});
