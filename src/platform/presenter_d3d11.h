@@ -39,6 +39,12 @@ class D3DPresenter {
     void render(const std::uint32_t* bgra, core::Size frame, core::Rect dest, Filter filter);
     void present(bool vsync);
 
+    // Stage B1 (spec 2026-10-07 §5.3): a straight-alpha 0xAARRGGBB picture blended over what
+    // render() drew, scaled into `where` like the frame. set_overlay uploads it (false if the
+    // texture cannot be made); draw_overlay does nothing until one is set.
+    bool set_overlay(const std::uint32_t* bgra, core::Size size);
+    void draw_overlay(core::Rect where, Filter filter);
+
     // Cursor sprites (A2 spec §5.3), kept per `key` for the presenter's lifetime. `bgra` is
     // straight-alpha 0xAARRGGBB. False if the texture cannot be made.
     bool add_sprite(std::uintptr_t key, const std::uint32_t* bgra, core::Size size);
@@ -53,7 +59,10 @@ class D3DPresenter {
   private:
     D3DPresenter() = default;
     bool create_pipeline(std::string& error);
-    bool ensure_frame_texture(core::Size frame);
+    // (Re)creates `texture`/`view` as a size-sized BGRA texture unless `current` already is it.
+    bool ensure_texture(Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture,
+                        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& view, core::Size& current,
+                        core::Size size);
     bool create_target();
     // Binds the pipeline and draws the quad into `where` from `view` (constants already set).
     void draw_quad(ID3D11ShaderResourceView* view, core::Rect where, ID3D11BlendState* blend);
@@ -74,6 +83,9 @@ class D3DPresenter {
     Microsoft::WRL::ComPtr<ID3D11BlendState> alpha_blend_;
     std::map<std::uintptr_t, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> sprites_;
     core::Size frame_size_{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> overlay_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> overlay_view_;
+    core::Size overlay_size_{};
     core::Size size_{};
     Driver driver_ = Driver::Warp;
 };
