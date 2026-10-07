@@ -134,7 +134,8 @@ bool create_shadow(std::uintptr_t w, int width, int height, int k) {
     shadow->height = height;
     shadow->k = k;
     shadow->stride = ((width * k + 3) / 4) * 4;
-    shadow->bits.assign(static_cast<std::size_t>(shadow->stride) * static_cast<std::size_t>(height * k), 0);
+    shadow->bits.assign(
+        static_cast<std::size_t>(shadow->stride) * static_cast<std::size_t>(height * k), 0);
     std::memcpy(shadow->desc.data(), reinterpret_cast<const void*>(w + l.w_device_desc),
                 sizeof shadow->desc);
     shadow->desc[0] = static_cast<std::uint32_t>(shadow->stride);
@@ -152,8 +153,8 @@ bool create_shadow(std::uintptr_t w, int width, int height, int k) {
         fn<HandleInt>(l.set_device_mode)(s->device, 0);
         fn<HandleInt>(l.set_device_dither)(s->device, 0);
         fn<HandleInt>(l.set_device_shades)(s->device, 8);
-        s->viewport = fn<CreateViewport>(l.create_viewport)(s->device, camera, 0, 0, s->stride,
-                                                            height * k);
+        s->viewport =
+            fn<CreateViewport>(l.create_viewport)(s->device, camera, 0, 0, s->stride, height * k);
         if (s->viewport != 0) {
             fn<ConfigureViewport>(l.configure_viewport)(s->viewport, 0, 0, width * k, height * k);
         }
@@ -206,8 +207,9 @@ void log_viewport_once(std::uintptr_t w) {
     if (fn<Lookup>(l.lookup_object)(&object, read<u32>(w + l.w_viewport),
                                     reinterpret_cast<const void*>(g_base + l.viewport_type)) == 0) {
         const auto o = static_cast<std::uintptr_t>(object);
-        platform::log("b1 spike: game viewport front " + std::to_string(read<float>(o + l.vp_front)) +
-                      " back " + std::to_string(read<float>(o + l.vp_back)) + " planes " +
+        platform::log("b1 spike: game viewport front " +
+                      std::to_string(read<float>(o + l.vp_front)) + " back " +
+                      std::to_string(read<float>(o + l.vp_back)) + " planes " +
                       std::to_string(read<float>(o + l.vp_plane_a)) + " " +
                       std::to_string(read<float>(o + l.vp_plane_b)) + " " +
                       std::to_string(read<float>(o + l.vp_plane_c)) + " " +
@@ -257,9 +259,9 @@ void compare_with_game(std::uintptr_t w, HDC src) {
         reinterpret_cast<const std::uint8_t*>(read<std::uintptr_t>(w + l.w_bits));
     const int game_stride = static_cast<int>(read<std::uint32_t>(w + l.w_device_desc));
     const Shadow& s = *g_shadow;
-    const int differing = core::count_differing_pixels({game_bits, game_stride, &game_palette},
-                                                       {s.bits.data(), s.stride, &s.palette},
-                                                       s.width, s.height);
+    const int differing =
+        core::count_differing_pixels({game_bits, game_stride, &game_palette},
+                                     {s.bits.data(), s.stride, &s.palette}, s.width, s.height);
     if (g_frames <= 3 || g_frames % 50 == 0) {
         platform::log("b1 spike: frame " + std::to_string(g_frames) + ", " +
                       std::to_string(differing) + " of " + std::to_string(s.width * s.height) +

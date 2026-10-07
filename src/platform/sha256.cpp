@@ -32,7 +32,8 @@ std::optional<std::string> sha256_file(const std::filesystem::path& path) {
             }
         }
         std::array<UCHAR, 32> digest{};
-        if (ok && BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0) {
+        if (ok &&
+            BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) == 0) {
             static constexpr char kHex[] = "0123456789abcdef";
             std::string hex;
             for (const UCHAR byte : digest) {

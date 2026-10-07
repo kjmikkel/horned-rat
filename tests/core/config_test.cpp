@@ -99,9 +99,7 @@ TEST_CASE("the default file parses back to the defaults", "[config]") {
     CHECK(r.config == Config{});
 }
 
-TEST_CASE("b1_spike is off by default", "[config]") {
-    CHECK(load_config("").config.b1_spike == 0);
-}
+TEST_CASE("b1_spike is off by default", "[config]") { CHECK(load_config("").config.b1_spike == 0); }
 
 TEST_CASE("b1_spike accepts 0 to 3", "[config]") {
     const auto r = load_config("[debug]\nb1_spike = 3\n");

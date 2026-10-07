@@ -13,8 +13,7 @@ TEST_CASE("sha256_file hashes a file's bytes", "[sha256]") {
         std::ofstream out(path, std::ios::binary);
         out << "abc";
     }
-    CHECK(sha256_file(path) ==
-          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(sha256_file(path) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     std::filesystem::remove(path);
 }
 
