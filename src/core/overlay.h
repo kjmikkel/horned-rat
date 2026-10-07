@@ -22,6 +22,15 @@ std::vector<std::uint32_t> to_bgra(const std::uint8_t* pixels, int stride, Size 
 std::vector<std::uint8_t> overlay_mask(const std::uint32_t* captured, Size captured_size, Rect view,
                                        const std::vector<std::uint32_t>& game);
 
+// How many pixels of a mask are set.
+int mask_coverage(const std::vector<std::uint8_t>& mask);
+
+// True if the capture shows the previous render rather than the newest: the newest mask covers
+// less than half the view and the previous one (same size) covers more. The game publishes a
+// render just before it blits it, so a capture can still show the one before.
+bool prefer_previous(const std::vector<std::uint8_t>& current,
+                     const std::vector<std::uint8_t>& previous);
+
 // Our factor× render (rows of `stride` bytes; size is the 1× size) as straight-alpha 0xAARRGGBB
 // rows of size.width·factor: opaque where the 1× mask is set, alpha 0 (colour kept, so filtering
 // at mask edges does not darken) elsewhere.

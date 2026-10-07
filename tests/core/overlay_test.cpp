@@ -54,3 +54,21 @@ TEST_CASE("compose_overlay scales the mask by the factor and keeps colour under 
     CHECK(out == std::vector<std::uint32_t>{0xFF112233u, 0xFF445566u, 0x00778899u, 0x00112233u,
                                             0xFF445566u, 0xFF778899u, 0x00112233u, 0x00445566u});
 }
+
+TEST_CASE("mask_coverage counts the set pixels", "[overlay]") {
+    CHECK(hr::core::mask_coverage({1, 0, 1, 1}) == 3);
+    CHECK(hr::core::mask_coverage({}) == 0);
+}
+
+TEST_CASE("the previous render is used only when it shows more and the current shows little",
+          "[overlay]") {
+    using hr::core::prefer_previous;
+    // current covers 1 of 4 (under half), previous 3: previous wins
+    CHECK(prefer_previous({1, 0, 0, 0}, {1, 1, 1, 0}));
+    // current covers half or more: keep it
+    CHECK_FALSE(prefer_previous({1, 1, 0, 0}, {1, 1, 1, 1}));
+    // previous no better: keep current
+    CHECK_FALSE(prefer_previous({1, 0, 0, 0}, {1, 0, 0, 0}));
+    // sizes differ (another layout): keep current
+    CHECK_FALSE(prefer_previous({0, 0, 0, 0}, {1, 1}));
+}

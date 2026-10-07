@@ -38,6 +38,23 @@ std::vector<std::uint8_t> overlay_mask(const std::uint32_t* captured, Size captu
     return mask;
 }
 
+int mask_coverage(const std::vector<std::uint8_t>& mask) {
+    int set = 0;
+    for (const std::uint8_t m : mask) {
+        set += m != 0 ? 1 : 0;
+    }
+    return set;
+}
+
+bool prefer_previous(const std::vector<std::uint8_t>& current,
+                     const std::vector<std::uint8_t>& previous) {
+    if (previous.size() != current.size()) {
+        return false;
+    }
+    const int now = mask_coverage(current);
+    return 2 * now < static_cast<int>(current.size()) && mask_coverage(previous) > now;
+}
+
 std::vector<std::uint32_t> compose_overlay(const std::uint8_t* hires, int stride, Size size,
                                            int factor, const Palette& palette,
                                            const std::vector<std::uint8_t>& mask) {

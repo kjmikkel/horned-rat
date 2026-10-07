@@ -145,50 +145,89 @@ void store_content_rect(core::Rect r) {
 }
 
 // Stage B1 (spec 2026-10-07 §5.3): draws the newest second render of the battle's 3D view over
-// the captured picture where the capture shows the game's own render. Presenter thread.
+// the captured picture where the capture shows the game's own render. The game publishes a render
+// just before it blits it, so a capture may still show the one before: the previous render is
+// kept and used when it matches the capture better. Presenter thread.
 class BattleOverlay {
   public:
     void draw(platform::D3DPresenter& d3d, HWND glue, core::Rect content, core::Rect dest,
               const std::uint32_t* captured, core::Size captured_size,
               platform::D3DPresenter::Filter filter) {
-        if (rl_shadow::take_frame(seen_, frame_)) {
-            game_ =
-                core::to_bgra(frame_.game.data(), frame_.size.width, frame_.size, frame_.palette);
-            dirty_ = true;
-            have_ = true;
+        core::ShadowFrame next;
+        if (rl_shadow::take_frame(seen_, next)) {
+            previous_ = std::move(current_);
+            current_.frame = std::move(next);
+            current_.game = core::to_bgra(current_.frame.game.data(), current_.frame.size.width,
+                                          current_.frame.size, current_.frame.palette);
+            current_.id = ++next_id_;
         }
-        const auto view = reinterpret_cast<HWND>(frame_.view_window);
-        if (!have_ || rl_shadow::now_s() - frame_.time_s > 0.25 || !IsWindow(view) ||
+        const core::ShadowFrame& newest = current_.frame;
+        const auto view = reinterpret_cast<HWND>(newest.view_window);
+        if (current_.id == 0 || rl_shadow::now_s() - newest.time_s > 0.25 || !IsWindow(view) ||
             !IsWindowVisible(view)) {
             return;
         }
         RECT r{};
         GetWindowRect(view, &r);
         MapWindowPoints(HWND_DESKTOP, glue, reinterpret_cast<POINT*>(&r), 2);
-        const core::Rect in_content{r.left - content.x, r.top - content.y, frame_.size.width,
-                                    frame_.size.height};
-        auto mask = core::overlay_mask(captured, captured_size, in_content, game_);
-        if (dirty_ || mask != mask_) {
+        const core::Rect in_content{r.left - content.x, r.top - content.y, newest.size.width,
+                                    newest.size.height};
+        auto mask = core::overlay_mask(captured, captured_size, in_content, current_.game);
+        const Entry* shown = &current_;
+        if (previous_.id != 0 && previous_.frame.size == newest.size &&
+            previous_.frame.factor == newest.factor) {
+            auto older = core::overlay_mask(captured, captured_size, in_content, previous_.game);
+            if (core::prefer_previous(mask, older)) {
+                mask = std::move(older);
+                shown = &previous_;
+                ++used_previous_;
+            }
+        }
+        ++draws_;
+        if (2 * core::mask_coverage(mask) < static_cast<int>(mask.size())) {
+            ++mostly_hidden_;
+        }
+        if (shown->id != composed_id_ || mask != mask_) {
             mask_ = std::move(mask);
+            const core::ShadowFrame& f = shown->frame;
             const auto pixels =
-                core::compose_overlay(frame_.hires.data(), frame_.stride, frame_.size,
-                                      frame_.factor, frame_.palette, mask_);
-            if (!d3d.set_overlay(pixels.data(), {frame_.size.width * frame_.factor,
-                                                 frame_.size.height * frame_.factor})) {
+                core::compose_overlay(f.hires.data(), f.stride, f.size, f.factor, f.palette, mask_);
+            if (!d3d.set_overlay(pixels.data(),
+                                 {f.size.width * f.factor, f.size.height * f.factor})) {
                 return;
             }
-            dirty_ = false;
+            composed_id_ = shown->id;
         }
         d3d.draw_overlay(core::map_rect(in_content, captured_size, dest), filter);
     }
 
+    // Diagnostics for the 10 s line: overlay draws, how many showed the previous render, and how
+    // many had less than half of the view matching; then resets the counts.
+    std::string take_line() {
+        char line[128];
+        std::snprintf(line, sizeof line,
+                      "%d overlay draws, %d from the previous render, %d mostly hidden", draws_,
+                      used_previous_, mostly_hidden_);
+        draws_ = used_previous_ = mostly_hidden_ = 0;
+        return line;
+    }
+
   private:
+    struct Entry {
+        core::ShadowFrame frame;
+        std::vector<std::uint32_t> game; // the game's 1× render as 0x00RRGGBB
+        std::uint64_t id = 0;            // 0 = none
+    };
+
     std::uint64_t seen_ = 0;
-    core::ShadowFrame frame_;
-    std::vector<std::uint32_t> game_;
+    std::uint64_t next_id_ = 0;
+    std::uint64_t composed_id_ = 0;
+    Entry current_;
+    Entry previous_;
     std::vector<std::uint8_t> mask_;
-    bool dirty_ = false;
-    bool have_ = false;
+    int draws_ = 0;
+    int used_previous_ = 0;
+    int mostly_hidden_ = 0;
 };
 
 // Runs on the game thread for every message of the main window (A2 spec §5.4).
@@ -538,6 +577,7 @@ void presenter_body() {
                                   shadow.factor, shadow.frames, shadow.total_ms / shadow.frames,
                                   shadow.max_ms);
                     platform::log(line);
+                    platform::log("presenter: 3D view " + battle_overlay.take_line());
                 }
                 stats_start = t2;
             }
