@@ -14,7 +14,8 @@ add_executable(platform_tests pe_test.cpp wing_forward_test.cpp proxy_test.cpp l
                               child_input_test.cpp presenter_d3d11_test.cpp
                               presenter_window_test.cpp dpi_context_test.cpp
                               message_spy_test.cpp cursor_image_test.cpp
-                              message_wait_test.cpp crash_log_test.cpp vtable_patch_test.cpp)
+                              message_wait_test.cpp crash_log_test.cpp vtable_patch_test.cpp
+                              sha256_test.cpp)
 target_include_directories(platform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(platform_tests PRIVATE hr_platform hr_warnings iat_fixture Catch2::Catch2WithMain)
 add_dependencies(platform_tests fake_wing wing32)
