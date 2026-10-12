@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/geometry.h"
 #include "core/shadow_frame.h"
 
 #include <windows.h>
@@ -16,8 +17,9 @@ namespace hr::wing32::rl_shadow {
 // Map3DClass window and subclasses it so our device goes before the game's own WM_DESTROY handler.
 void on_window_created(HWND window, const std::string& class_name);
 
-// Game thread, from WinGBitBlt / WinGStretchBlt before the original.
-void before_blit(HDC dest, HDC src);
+// Game thread, from WinGBitBlt / WinGStretchBlt before the original, with the blit's source and
+// destination sizes (equal for WinGBitBlt; half the destination in the game's low detail).
+void before_blit(HDC dest, HDC src, core::Size src_size, core::Size dest_size);
 
 // Presenter thread: the factor to render at (1 or less = do not render).
 void set_factor(int factor);

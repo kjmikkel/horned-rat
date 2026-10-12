@@ -2,6 +2,7 @@
 
 #include "core/gamef_layout.h"
 #include "core/latest.h"
+#include "core/overlay.h"
 #include "core/render_scale.h"
 #include "platform/log.h"
 #include "platform/sha256.h"
@@ -55,7 +56,6 @@ HWND g_view = nullptr;
 std::unique_ptr<platform::Subclass> g_subclass;
 std::unique_ptr<Device> g_device;
 core::RenderBudget g_budget;
-bool g_logged_half = false;
 
 // Shared with the presenter thread.
 std::atomic<int> g_factor{1};
@@ -197,7 +197,7 @@ bool copy_viewport(std::uintptr_t w) {
     return true;
 }
 
-void publish(std::uintptr_t w, HDC src) {
+void publish(std::uintptr_t w, HDC src, core::Size src_size) {
     const auto& l = *g_layout;
     const Device& d = *g_device;
     core::ShadowFrame frame;
@@ -208,12 +208,9 @@ void publish(std::uintptr_t w, HDC src) {
     const auto* game_bits =
         reinterpret_cast<const std::uint8_t*>(read<std::uintptr_t>(w + l.w_bits));
     const int game_stride = static_cast<int>(read<std::uint32_t>(w + l.w_device_desc));
-    frame.game.resize(static_cast<std::size_t>(d.width) * d.height);
-    for (int y = 0; y < d.height; ++y) {
-        std::memcpy(frame.game.data() + static_cast<std::size_t>(y) * d.width,
-                    game_bits + static_cast<std::ptrdiff_t>(y) * game_stride,
-                    static_cast<std::size_t>(d.width));
-    }
+    // As the screen shows it: the same pixels at detail 1, GDI's stretch of the half-size frame
+    // at detail 2 (the presenter's mask compares the capture with this).
+    frame.game = core::stretch_indices(game_bits, game_stride, src_size, {d.width, d.height});
     std::array<RGBQUAD, 256> quads{};
     GetDIBColorTable(src, 0, 256, quads.data());
     for (std::size_t i = 0; i < 256; ++i) {
@@ -225,17 +222,10 @@ void publish(std::uintptr_t w, HDC src) {
     g_frames.publish(std::move(frame));
 }
 
-void render(HDC src) {
+void render(HDC src, core::Size src_size, core::Size dest_size) {
     const auto& l = *g_layout;
     const auto w = static_cast<std::uintptr_t>(GetWindowLongA(GetParent(g_view), 4));
     if (w == 0) {
-        return;
-    }
-    if (read<int>(w + l.w_divisor) != 1) {
-        if (!g_logged_half) {
-            g_logged_half = true;
-            platform::log("b1: half detail, sharp 3D view paused");
-        }
         return;
     }
     const int factor = std::min(g_factor.load(), g_budget.cap());
@@ -244,6 +234,13 @@ void render(HDC src) {
     }
     const int width = read<int>(w + l.w_active_width);
     const int height = read<int>(w + l.w_active_height);
+    // The game blits the active view size, from its full-size (detail 1) or half-size (detail 2)
+    // frame at the top left of its bitmap. Anything else is not the 3D view's frame.
+    const int game_stride = static_cast<int>(read<std::uint32_t>(w + l.w_device_desc));
+    if (dest_size.width != width || dest_size.height != height || src_size.width <= 0 ||
+        src_size.height <= 0 || src_size.width > game_stride || src_size.height > height) {
+        return;
+    }
     if (!g_device || g_device->width != width || g_device->height != height ||
         g_device->factor != factor) {
         destroy_device();
@@ -284,7 +281,7 @@ void render(HDC src) {
         g_stats.max_ms = ms > g_stats.max_ms ? ms : g_stats.max_ms;
         g_stats.factor = factor;
     }
-    publish(w, src);
+    publish(w, src, src_size);
 }
 
 } // namespace
@@ -315,12 +312,12 @@ void on_window_created(HWND window, const std::string& class_name) {
         });
 }
 
-void before_blit(HDC dest, HDC src) {
+void before_blit(HDC dest, HDC src, core::Size src_size, core::Size dest_size) {
     if (g_state != State::On || g_view == nullptr || !a2::active() ||
         WindowFromDC(dest) != g_view) {
         return;
     }
-    render(src);
+    render(src, src_size, dest_size);
 }
 
 void set_factor(int factor) { g_factor = factor; }
