@@ -93,3 +93,12 @@ The log item applies from A1 on. Later milestones add items here (window resizin
       the picture, and the landscape does not flicker while the camera pans.
 - [ ] `render_scale = 1`: the 3D view looks exactly like vanilla; the log has no `b1:` lines.
 - [ ] `horned-rat.log`: `b1: known GAMEF.DLL build`, `b1: device …`, no `b1: off` line.
+
+### Stage B1 layouts and detail (from B1.2)
+- [ ] Low 3D detail (game options): the view shows the game's own pixelated look; the log shows
+      `b1: half detail, sharp 3D view paused`. Back to high detail: sharp again straight away.
+- [ ] Widescreenbutton (top-right corner of the battle screen; the 2D map panel hides): the wide
+      view is sharp, in the window and fullscreen. The log shows a new `b1: device` line per switch
+      (`1248x592` at x2, `1872x888` at x3); switching back leaves no overlay at the old size.
+- [ ] `horned-rat.log`: the `3D view xK` lines stay far under 50 ms avg (also wide at x3), and no
+      `b1: second render too slow` line in normal play.

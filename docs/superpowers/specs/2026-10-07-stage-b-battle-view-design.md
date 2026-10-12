@@ -155,6 +155,13 @@ Red/green TDD for every behaviour (project rule).
   previous render. Details in `docs/re-notes/b1-1-exit.md`.
 - **B1.2 — Polish.** Layout switch (both layouts), half-detail divisor, performance line, smoke
   test.
+  **Result (2026-10-12):** passed:
+  - both layouts are sharp, with the device rebuilt on each switch; the wide layout at 3× costs
+    2.3–4.8 ms per render;
+  - low detail keeps the game's own pixelated look (the sharp view pauses), by the user's choice;
+    a sharp low-detail variant was built and reverted;
+  - the performance line came with B1.1.
+  One unexplained freeze, not reproduced: issue #17. Details in `docs/re-notes/b1-2-exit.md`.
 - **B2 — Bigger view (own spec).** Builds on our own viewport: larger extents and a larger
   presenter area, after vanilla's wide layout. Open: where the 2D map and panels go, and how clicks
   in the added area reach the game. Unit picking is not traced yet and is B2's first
