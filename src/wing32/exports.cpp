@@ -44,9 +44,7 @@ BOOL WINAPI WinGBitBlt(HDC dest, int x, int y, int width, int height, HDC src, i
                        int src_y) {
     hr::wing32::log_wing_bit_blt(_ReturnAddress(), dest, x, y, width, height);
     hr::platform::guarded(
-        "rl_shadow",
-        [&] { hr::wing32::rl_shadow::before_blit(dest, src, {width, height}, {width, height}); },
-        [] {});
+        "rl_shadow", [&] { hr::wing32::rl_shadow::before_blit(dest, src); }, [] {});
     return original().bit_blt(dest, x, y, width, height, src, src_x, src_y);
 }
 
@@ -54,11 +52,7 @@ BOOL WINAPI WinGStretchBlt(HDC dest, int x, int y, int width, int height, HDC sr
                            int src_y, int src_width, int src_height) {
     hr::wing32::log_wing_stretch_blt(_ReturnAddress(), dest, x, y, width, height);
     hr::platform::guarded(
-        "rl_shadow",
-        [&] {
-            hr::wing32::rl_shadow::before_blit(dest, src, {src_width, src_height}, {width, height});
-        },
-        [] {});
+        "rl_shadow", [&] { hr::wing32::rl_shadow::before_blit(dest, src); }, [] {});
     return original().stretch_blt(dest, x, y, width, height, src, src_x, src_y, src_width,
                                   src_height);
 }
