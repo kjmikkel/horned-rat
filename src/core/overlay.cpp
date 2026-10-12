@@ -16,6 +16,24 @@ std::vector<std::uint32_t> to_bgra(const std::uint8_t* pixels, int stride, Size 
     return out;
 }
 
+std::vector<std::uint8_t> stretch_indices(const std::uint8_t* src, int stride, Size src_size,
+                                          Size dst_size) {
+    if (src_size.width <= 0 || src_size.height <= 0 || dst_size.width <= 0 ||
+        dst_size.height <= 0) {
+        return {};
+    }
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(dst_size.width) * dst_size.height);
+    for (int y = 0; y < dst_size.height; ++y) {
+        const int sy = (2 * y + 1) * src_size.height / (2 * dst_size.height);
+        const std::uint8_t* row = src + static_cast<std::ptrdiff_t>(sy) * stride;
+        for (int x = 0; x < dst_size.width; ++x) {
+            const int sx = (2 * x + 1) * src_size.width / (2 * dst_size.width);
+            out[static_cast<std::size_t>(y) * dst_size.width + x] = row[sx];
+        }
+    }
+    return out;
+}
+
 std::vector<std::uint8_t> overlay_mask(const std::uint32_t* captured, Size captured_size, Rect view,
                                        const std::vector<std::uint32_t>& game) {
     std::vector<std::uint8_t> mask(static_cast<std::size_t>(view.width) * view.height, 0);

@@ -72,3 +72,23 @@ TEST_CASE("the previous render is used only when it shows more and the current s
     // sizes differ (another layout): keep current
     CHECK_FALSE(prefer_previous({0, 0, 0, 0}, {1, 1}));
 }
+
+TEST_CASE("stretch_indices samples the source under each destination pixel's centre", "[overlay]") {
+    using hr::core::stretch_indices;
+    // 2x1 in stride 3 -> 5x2: columns take sx = (2x+1)*2/10 = 0,0,1,1,1; rows sy = 0,0.
+    const std::vector<std::uint8_t> src{7, 9, 0};
+    CHECK(stretch_indices(src.data(), 3, {2, 1}, {5, 2}) ==
+          std::vector<std::uint8_t>{7, 7, 9, 9, 9, 7, 7, 9, 9, 9});
+}
+
+TEST_CASE("stretch_indices at the same size copies the pixels", "[overlay]") {
+    const std::vector<std::uint8_t> src{1, 2, 0, 3, 4, 0}; // 2x2 in stride 3
+    CHECK(hr::core::stretch_indices(src.data(), 3, {2, 2}, {2, 2}) ==
+          std::vector<std::uint8_t>{1, 2, 3, 4});
+}
+
+TEST_CASE("stretch_indices with an empty size gives nothing", "[overlay]") {
+    const std::vector<std::uint8_t> src{1};
+    CHECK(hr::core::stretch_indices(src.data(), 1, {0, 1}, {2, 2}).empty());
+    CHECK(hr::core::stretch_indices(src.data(), 1, {1, 1}, {2, 0}).empty());
+}
