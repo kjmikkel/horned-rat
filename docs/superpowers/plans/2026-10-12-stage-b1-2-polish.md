@@ -13,7 +13,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-07-stage-b-battle-view-design.md` (§5.1, §5.3, §8, §9 B1.2). B1.1 results: `docs/re-notes/b1-1-exit.md`.
 
-**Deviations from the spec (decided while planning, with the user):**
+**Outcome (2026-10-12, after the first in-game runs):** the user chose to keep low detail as the game's own pixelated look, B1.1's behaviour, so Tasks 1 and 2 were reverted (`5e3f76d`, `704f9e6`):
+- the setting exists to save CPU, and rendering sharp in it does the opposite;
+- the one freeze seen happened only with the sharp render in low detail.
+
+GDI's stretch rule stays documented outside the repo, in `Documentationattle-3d-view.md`. B1.2 is now Task 3: the in-game check of both detail levels and both layouts, plus the notes.
+
+**Deviations from the spec (decided while planning, with the user; superseded by the outcome above):**
 - **Low detail renders sharp** instead of being a separate case. Our render never depended on the detail divisor; only the mask did.
 - **Performance line:** the spec lists it under B1.2, but B1.1 already added it (`presenter: 3D view xK, N renders, X ms avg, Y ms max`). B1.2 only adds a smoke-test item for it.
 
