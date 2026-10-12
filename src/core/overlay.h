@@ -15,13 +15,6 @@ using Palette = std::array<std::uint32_t, 256>;
 std::vector<std::uint32_t> to_bgra(const std::uint8_t* pixels, int stride, Size size,
                                    const Palette& palette);
 
-// 8-bit pixels (rows of `stride` bytes, src_size) stretched to dst_size, rows packed, the way GDI's
-// StretchBlt maps them: each destination pixel takes the source pixel under its centre,
-// sx = floor((2x+1)·src_w / (2·dst_w)), sy likewise. Empty if any size is empty. Stage B1 uses it
-// for the game's low-detail 3D view, which the game stretches with WinGStretchBlt.
-std::vector<std::uint8_t> stretch_indices(const std::uint8_t* src, int stride, Size src_size,
-                                          Size dst_size);
-
 // Stage B1 (spec 2026-10-07 §5.3): per pixel of the 3D view, 1 where the captured picture shows
 // the game's own 1× render (`game`, view.width x view.height, 0x00RRGGBB), else 0. `view` is
 // where the 3D view lies in the capture; parts outside the capture count as covered. Alpha bytes
