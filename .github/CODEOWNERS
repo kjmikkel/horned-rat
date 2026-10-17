@@ -6,6 +6,8 @@
 /.trail @kjmikkel
 /node_modules @kjmikkel
 /dist/claude @kjmikkel
+# a root package.json can redirect trail's resolution into the repo (self-reference)
+/package.json @kjmikkel
 .claude @kjmikkel
 CLAUDE.md @kjmikkel
 CLAUDE.local.md @kjmikkel

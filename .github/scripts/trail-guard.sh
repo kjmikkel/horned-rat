@@ -11,7 +11,10 @@ owner=$2
 
 # (/|$): a symlink or submodule named node_modules, .claude or dist is one path
 # with no slash, and node and Claude follow it.
-protected='^\.trail(/|$)|^node_modules(/|$)|^dist$|^dist/claude(/|$)|(^|/)\.claude(/|$)|(^|/)claude(\.local)?\.md$|(^|/)agents\.md$|(^|/)\.mcp\.json$|^docs$|^docs/handoff\.md$'
+protected='^\.trail(/|$)|^node_modules(/|$)|^dist$|^dist/claude(/|$)|(^|/)\.claude(/|$)|(^|/)claude(\.local)?\.md$|(^|/)agents\.md$|(^|/)\.mcp\.json$|^docs$|^docs/handoff\.md$|^package\.json$'
+# ^package.json: hook.cjs resolves trail from the repo root, and Node first tries
+# a self-reference through the root package.json, whose "exports" can point
+# trail's package.json (and so its dist/claude) at any directory in the repo.
 short_name='(^|/)[^/]*~[0-9][^/]*(/|$)' # 8.3 alias such as TRAIL~1, which Windows may resolve to .trail
 # .trail/hook.cjs runs `npm root -g` through cmd.exe, which tries the current
 # directory first with every default PATHEXT extension.

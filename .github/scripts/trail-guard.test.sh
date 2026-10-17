@@ -22,6 +22,11 @@ expect fail "a look-alike login is not the owner" KJMIKKEL-fake kjmikkel .trail/
 # hook.cjs imports trail from <repo>/node_modules and, last, <repo>/dist/claude
 expect fail "others may not plant a trail package" someone kjmikkel node_modules/@trailhq/trail-code/package.json
 expect fail "others may not plant dist/claude"     someone kjmikkel dist/claude/hooks.js
+# require.resolve from the repo root self-references a root package.json named
+# like trail, whose "exports" can point package.json anywhere in the repo
+expect fail "others may not add a root package.json" someone kjmikkel package.json
+expect fail "upper-case PACKAGE.JSON"              someone kjmikkel PACKAGE.JSON
+expect pass "others may add a nested package.json" someone kjmikkel tools/web/package.json
 
 # Windows checkouts are case-insensitive and drop trailing dots and spaces
 expect fail "upper-case .TRAIL/"                  someone  kjmikkel .TRAIL/learnings/a.md
