@@ -1,0 +1,29 @@
+# Paths that feed coding agents code or instructions: Trail injects .trail/
+# learnings at session start and .trail/hook.cjs imports trail from
+# node_modules/ or dist/claude/; Claude Code loads the rest. Review like code.
+# No trailing slash, so a symlink with the same name is covered too.
+# Enforced for outside contributors by the guard / trail-owner-only CI job.
+/.trail @kjmikkel
+/node_modules @kjmikkel
+/dist/claude @kjmikkel
+# a root package.json can redirect trail's resolution into the repo (self-reference)
+/package.json @kjmikkel
+.claude @kjmikkel
+CLAUDE.md @kjmikkel
+CLAUDE.local.md @kjmikkel
+AGENTS.md @kjmikkel
+.mcp.json @kjmikkel
+# CLAUDE.md tells each session to start from this continuation prompt
+/docs/handoff.md @kjmikkel
+# cmd.exe runs these from the current directory before PATH (npm.cmd, node.exe)
+/*.com @kjmikkel
+/*.exe @kjmikkel
+/*.bat @kjmikkel
+/*.cmd @kjmikkel
+/*.vbs @kjmikkel
+/*.vbe @kjmikkel
+/*.js @kjmikkel
+/*.jse @kjmikkel
+/*.wsf @kjmikkel
+/*.wsh @kjmikkel
+/*.msc @kjmikkel
